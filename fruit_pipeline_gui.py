@@ -37,7 +37,7 @@ OUTPUT_DIR = "pipeline_output"          # masked crops for the ripeness stage go
 CONF_THRESHOLD = 0.25                   # detection confidence cut-off
 DISPLAY_MAX = 480                       # max px for on-screen preview
 
-MODEL_PATH = r"bestmodel.pt"
+MODEL_PATH = r"bestmodel2.pt"
 
 
 
