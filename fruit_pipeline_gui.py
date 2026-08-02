@@ -158,7 +158,7 @@ def export_for_ripeness(img_bgr, detections, out_dir=OUTPUT_DIR):
 def ripeness_stage(masked_crop_bgr, fruit_type):
     """
     ==================================================================
-    Nothing
+    -
 
     ==================================================================
     """
@@ -324,15 +324,21 @@ class PipelineGUI:
 
     def process_frame(self, img_bgr, log_result=True):
         """Full flowchart on one BGR image; updates all three panels.
-        Returns (count, per_class). Shared by single-run and live video."""
+        Returns (count, per_class). Shared by single-run and live video.
+
+        Note: DETECTION runs on the ORIGINAL image (the model was trained on
+        normal photos, so preprocessing that neutralises colour hurts it). The
+        preprocessed image is still produced and shown, and is what gets handed
+        to the ripeness stage, which is what it was designed for.
+        """
         self.current_img = img_bgr
-        self.pre_img = preprocess(img_bgr)                    # Preprocessing
-        self.detections = segment(self.model, self.pre_img)  # Fruit Segmentation
-        count = contour_count(self.detections)               # Contour Count
+        self.pre_img = preprocess(img_bgr)                     # Preprocessing (for ripeness)
+        self.detections = segment(self.model, self.current_img)  # Segmentation on ORIGINAL
+        count = contour_count(self.detections)                # Contour Count
 
         self.show("orig", self.current_img)
         self.show("pre", self.pre_img)
-        self.refresh_segmented()                             # Segmented panel
+        self.refresh_segmented()                              # Segmented panel
 
         per_class = {}
         for d in self.detections:
@@ -394,17 +400,24 @@ class PipelineGUI:
         self.log("Live video stopped. Last frame kept - you can Export for Ripeness.")
 
     def refresh_segmented(self):
-        """Redraw the Segmented panel, honouring the mask-overlay toggle."""
-        if self.pre_img is None or not self.detections:
+        """Redraw the Segmented panel, honouring the mask-overlay toggle.
+        Drawn on the ORIGINAL image, since detection ran on it (matching coords).
+        When there are no detections, still show the current frame (no contours)
+        so live video keeps updating instead of appearing frozen."""
+        if self.current_img is None:
             return
-        annotated = annotate(self.pre_img, self.detections, show_mask=self.show_mask.get())
+        if not self.detections:
+            self.show("seg", self.current_img)   # no fruit -> show plain frame
+            return
+        annotated = annotate(self.current_img, self.detections, show_mask=self.show_mask.get())
         self.show("seg", annotated)
 
     def export(self):
         if not self.detections:
             messagebox.showwarning("Nothing to export", "Run the pipeline first.")
             return
-        session, manifest = export_for_ripeness(self.pre_img, self.detections)
+        # crops come from the ORIGINAL image so masks align; ripeness can re-clean if needed
+        session, manifest = export_for_ripeness(self.current_img, self.detections)
         self.log(f"\nExported {len(manifest)} masked fruit crop(s) for the ripeness stage:")
         self.log(f"  {os.path.abspath(session)}")
         self.log("  (manifest.json lists each fruit's type, area, and crop file.)")
