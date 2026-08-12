@@ -4,29 +4,17 @@ Fruit Segmentation Pipeline GUI
 Implements the front-end stages of the project flowchart:
 
     Input (image / camera)
-        -> Preprocessing             (preprocessing.py Stages 2 + 3)
-        -> Fruit Segmentation        (YOLO-seg instance masks)
-        -> Mask refinement           (preprocessing.py Stage 4)
-        -> Contour Count             (cv2.findContours on each mask)
+        -> Preprocessing
+        -> Fruit Segmentation        (YOLO26-seg instance masks)
+        -> Contour Count             (classical cv2.findContours on each mask)
         -> Fruit Identification      (class label per instance)
         -> Output + hand-off         (masked fruit crops saved for the ripeness stage)
 
-HOW THE PREPROCESSING IS WIRED IN
----------------------------------
-Detection now runs on the PREPARED image, not the original. That is safe because
-preprocessing.prepare_for_detector() returns everything needed to map the masks
-back into original-frame coordinates, so every downstream stage still works in
-the original photo's pixel space.
+The ripeness / defect / grading stage is intentionally left as a stub
+(`ripeness_stage`) for a teammate to implement. This GUI produces exactly what
+that stage needs: one masked crop per fruit plus a manifest describing each.
 
-    prep = preprocessing.prepare_for_detector(frame)   # Stage 2 + 3
-    dets = segment(model, prep.image)                  # YOLO
-    dets = preprocessing.map_detections_to_frame(dets, prep)
-    dets = preprocessing.refine_detections(dets, frame)  # Stage 4
-
-The ripeness path is separate: the Stage-1 operations are applied per CROP at
-export time, where being aggressive is safe.
-
-Run inside the venv that has ultralytics + torch:
+Run inside the venv that has ultralytics + CUDA torch:
     python fruit_pipeline_gui.py
 """
 
@@ -49,39 +37,27 @@ OUTPUT_DIR = "pipeline_output"          # masked crops for the ripeness stage go
 CONF_THRESHOLD = 0.25                   # detection confidence cut-off
 DISPLAY_MAX = 480                       # max px for on-screen preview
 
-MODEL_PATH = r"best2.pt"
-
-# Match IMGSZ to preprocessing.DETECTOR_IMGSZ so an upscaled crop arrives at the
-# network without a second internal rescale. Raise both to 1280 for very small
-# or distant fruit.
-IMGSZ = preprocessing.DETECTOR_IMGSZ
+MODEL_PATH = r"bestmodel2.pt"
 
 
-def clean_crop(crop_bgr):
-    """Stage-1 clean-up for one fruit crop, minus the resize step.
 
-    preprocessing.preprocess() would resize to an 800 px long side, which on a
-    small crop means upscaling and inventing detail. The Stage-1 toolbox is
-    reusable on its own, so the crop gets the same treatment at its native size.
+def preprocess(img_bgr):
     """
-    img = preprocessing.white_balance(crop_bgr)
-    img = preprocessing.denoise(img)
-    img, _ = preprocessing.apply_clahe(img)
-    img, _ = preprocessing.remove_specular_highlights(img)
-    return img
+    Flowchart: Preprocessing.
+    Delegates to the Stage-1 preprocessing module (white balance, edge-preserving
+    denoise, conditional CLAHE, glare removal, size normalisation). Returns the
+    cleaned BGR image; segmentation and all later steps run on this.
+    """
+    result = preprocessing.preprocess(img_bgr)     # PreprocessResult
+    return result.bgr
 
 
-def segment(model, img_bgr, conf=CONF_THRESHOLD, imgsz=IMGSZ):
+def segment(model, img_bgr, conf=CONF_THRESHOLD):
     """
     Flowchart: Fruit Segmentation.
-    Returns a list of per-instance dicts: binary mask, class id, confidence, box.
-
-    retina_masks=True makes ultralytics compute masks at the input resolution
-    instead of upsampling the 160x160 prototype, which is the single largest
-    improvement available to mask quality for one keyword.
+    Returns a list of per-instance dicts: binary mask, class id, confidence.
     """
-    res = model.predict(img_bgr, conf=conf, imgsz=imgsz,
-                        retina_masks=True, verbose=False)[0]
+    res = model.predict(img_bgr, conf=conf, verbose=False)[0]
     H, W = img_bgr.shape[:2]
     detections = []
     if res.masks is None:
@@ -89,12 +65,10 @@ def segment(model, img_bgr, conf=CONF_THRESHOLD, imgsz=IMGSZ):
     masks = res.masks.data.cpu().numpy()          # (N, mh, mw) in 0..1
     cls_ids = res.boxes.cls.cpu().numpy().astype(int)
     confs = res.boxes.conf.cpu().numpy()
-    boxes = res.boxes.xyxy.cpu().numpy()
-    for m, c, cf, bx in zip(masks, cls_ids, confs, boxes):
+    for m, c, cf in zip(masks, cls_ids, confs):
         mask = (m > 0.5).astype("uint8") * 255
         mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
-        detections.append({"mask": mask, "cls": int(c), "conf": float(cf),
-                           "box": [float(v) for v in bx]})
+        detections.append({"mask": mask, "cls": int(c), "conf": float(cf)})
     return detections
 
 
@@ -148,35 +122,12 @@ def annotate(img_bgr, detections, show_mask=False):
     return out
 
 
-def draw_roi(img_bgr, prep):
-    """Show the region that was cropped and sent to the detector.
-
-    Without this the zoom is invisible: the crop is upscaled, detected, and
-    mapped straight back to full-frame coordinates, so the final overlay looks
-    identical whether the network saw the whole frame or a zoomed region. This
-    is how you tell a working pipeline from one that silently did nothing.
-    """
-    out = img_bgr.copy()
-    H, W = img_bgr.shape[:2]
-    x1, y1, x2, y2 = prep.roi
-    if (x1, y1, x2, y2) == (0, 0, W, H):
-        text = "no ROI - whole frame"
-    else:
-        text = f"ROI {100*(x2-x1)*(y2-y1)/(W*H):.0f}%  zoom x{prep.scale:.1f}"
-        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 215, 255), max(2, W // 400))
-    for thick, colour in ((5, (0, 0, 0)), (2, (0, 215, 255))):
-        cv2.putText(out, text, (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.65, colour, thick, cv2.LINE_AA)
-    return out
-
-
 def export_for_ripeness(img_bgr, detections, out_dir=OUTPUT_DIR):
     """
     Flowchart hand-off: Output -> (Ripeness / Defect / Grade).
     For each fruit, save a MASKED crop (background removed, only fruit pixels)
-    plus a manifest. The Stage-1 clean-up is applied PER CROP here rather than
-    to the whole frame, so white balance and glare removal are estimated from
-    the fruit itself instead of from the whole scene. Returns the manifest list.
+    plus a manifest. This is exactly what the HSV ripeness + defect stage
+    consumes. Returns the manifest list.
     """
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = os.path.join(out_dir, stamp)
@@ -189,9 +140,6 @@ def export_for_ripeness(img_bgr, detections, out_dir=OUTPUT_DIR):
         masked = cv2.bitwise_and(img_bgr, img_bgr, mask=d["mask"])
         x, y, w, h = cv2.boundingRect(d["contour"])
         crop = masked[y:y + h, x:x + w]
-        if crop.size == 0:
-            continue
-        crop = clean_crop(crop)                       # Stage-1 operations, per crop
         fname = f"fruit_{i+1:02d}_{CLASS_NAMES[d['cls']]}.png"
         cv2.imwrite(os.path.join(session, fname), crop)
         manifest.append({
@@ -210,8 +158,8 @@ def export_for_ripeness(img_bgr, detections, out_dir=OUTPUT_DIR):
 def ripeness_stage(masked_crop_bgr, fruit_type):
     """
     ==================================================================
-    Left for the teammate implementing ripeness / defect / grading.
-    Input: a Stage-1 cleaned, background-removed crop of one fruit.
+    -
+
     ==================================================================
     """
     raise NotImplementedError("Ripeness/defect/grading stage not implemented yet.")
@@ -228,12 +176,9 @@ class PipelineGUI:
         root.title("Fruit Segmentation Pipeline")
         self.model = None
         self.current_img = None          # last loaded BGR image (original)
-        self.det_img = None              # what the detector actually saw
+        self.pre_img = None              # preprocessed (cleaned + resized) image
         self.detections = []
         self.show_mask = tk.BooleanVar(value=False)
-        self.use_roi = tk.BooleanVar(value=True)     # Stage 3 on/off, for A/B testing
-        self.use_photo = tk.BooleanVar(value=True)   # Stage 2 on/off, for A/B testing
-        self.use_refine = tk.BooleanVar(value=True)  # Stage 4 on/off, for A/B testing
         self.cap = None                  # active VideoCapture during live mode
         self.live = False                # live-video running flag
 
@@ -248,20 +193,10 @@ class PipelineGUI:
         self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop_live, state="disabled")
         self.stop_btn.pack(side="left", padx=4)
         ttk.Button(bar, text="Export for Ripeness", command=self.export).pack(side="left", padx=4)
+        ttk.Checkbutton(bar, text="Show mask overlay", variable=self.show_mask,
+                        command=self.refresh_segmented).pack(side="left", padx=12)
 
-        # stage toggles -- flip these and re-run to see what each stage is worth
-        bar2 = ttk.Frame(root, padding=(8, 0))
-        bar2.pack(fill="x")
-        ttk.Checkbutton(bar2, text="Show mask overlay", variable=self.show_mask,
-                        command=self.refresh_segmented).pack(side="left", padx=4)
-        ttk.Checkbutton(bar2, text="Stage 2: photometric",
-                        variable=self.use_photo).pack(side="left", padx=10)
-        ttk.Checkbutton(bar2, text="Stage 3: ROI zoom",
-                        variable=self.use_roi).pack(side="left", padx=10)
-        ttk.Checkbutton(bar2, text="Stage 4: mask refine",
-                        variable=self.use_refine).pack(side="left", padx=10)
-
-        # three equal panels
+        # three equal panels: Original | Preprocessed | Segmented
         panels = ttk.Frame(root, padding=8)
         panels.pack(fill="both", expand=False)
         self.panel = {}
@@ -269,8 +204,8 @@ class PipelineGUI:
         self._placeholder = ImageTk.PhotoImage(
             Image.new("RGB", (self.PANEL, self.PANEL), (238, 238, 238)))
         for col, (key, title) in enumerate([
-            ("orig", "1. Original + ROI"),
-            ("pre", "2. Detector input"),
+            ("orig", "1. Original"),
+            ("pre", "2. Preprocessed"),
             ("seg", "3. Segmented + Contours"),
         ]):
             frame = ttk.LabelFrame(panels, text=title, padding=4)
@@ -284,9 +219,9 @@ class PipelineGUI:
             self.panel[key] = lbl
 
         # results text
-        self.info = tk.Text(root, height=9)
+        self.info = tk.Text(root, height=8)
         self.info.pack(fill="x", padx=8, pady=6)
-        self.log(f"Model: {MODEL_PATH}   imgsz={IMGSZ}   conf={CONF_THRESHOLD}")
+        self.log(f"Model: {MODEL_PATH}")
         self.log("Load an image (or capture from camera), then Run Pipeline.")
 
     def log(self, msg):
@@ -332,13 +267,12 @@ class PipelineGUI:
         if not path:
             return
         self.current_img = cv2.imread(path)
-        self.det_img = None
+        self.pre_img = None
         self.detections = []
         self.show("orig", self.current_img)
         self.clear_panel("pre")
         self.clear_panel("seg")
-        self.log(f"\nLoaded: {os.path.basename(path)}  "
-                 f"({self.current_img.shape[1]}x{self.current_img.shape[0]})")
+        self.log(f"Loaded: {os.path.basename(path)}")
 
     def capture_camera(self):
         """Live preview inside the app (no cv2.imshow window). SPACE captures."""
@@ -369,7 +303,7 @@ class PipelineGUI:
         def capture(_=None):
             if state["frame"] is not None:
                 self.current_img = state["frame"].copy()
-                self.det_img = None
+                self.pre_img = None
                 self.detections = []
                 self.show("orig", self.current_img)
                 self.clear_panel("pre")
@@ -392,46 +326,25 @@ class PipelineGUI:
         """Full flowchart on one BGR image; updates all three panels.
         Returns (count, per_class). Shared by single-run and live video.
 
-        Detection runs on the PREPARED image. The masks come back in prepared-
-        image coordinates and are mapped to the original frame before anything
-        downstream touches them, so contour count, annotation and export all
-        continue to work in the original photo's pixel space.
+        Note: DETECTION runs on the ORIGINAL image (the model was trained on
+        normal photos, so preprocessing that neutralises colour hurts it). The
+        preprocessed image is still produced and shown, and is what gets handed
+        to the ripeness stage, which is what it was designed for.
         """
         self.current_img = img_bgr
+        self.pre_img = preprocess(img_bgr)                     # Preprocessing (for ripeness)
+        self.detections = segment(self.model, self.current_img)  # Segmentation on ORIGINAL
+        count = contour_count(self.detections)                # Contour Count
 
-        # --- Preprocessing: Stage 2 (photometric) + Stage 3 (ROI + zoom)
-        prep = preprocessing.prepare_for_detector(
-            img_bgr,
-            use_roi=self.use_roi.get(),
-            mild=self.use_photo.get(),
-            target_long_side=IMGSZ,
-        )
-        self.det_img = prep.image
-
-        # --- Segmentation on the prepared image
-        dets = segment(self.model, prep.image)
-
-        # --- Back into original-frame coordinates (no-op if no crop happened)
-        dets = preprocessing.map_detections_to_frame(dets, prep)
-
-        # --- Stage 4: clean the masks
-        if self.use_refine.get():
-            dets = preprocessing.refine_detections(dets, img_bgr)
-
-        self.detections = dets
-        count = contour_count(self.detections)        # Contour Count
-
-        self.show("orig", draw_roi(img_bgr, prep))
-        self.show("pre", self.det_img)
-        self.refresh_segmented()
+        self.show("orig", self.current_img)
+        self.show("pre", self.pre_img)
+        self.refresh_segmented()                              # Segmented panel
 
         per_class = {}
         for d in self.detections:
             per_class[CLASS_NAMES[d["cls"]]] = per_class.get(CLASS_NAMES[d["cls"]], 0) + 1
         if log_result:
-            self.log("Preprocessing -> " + ", ".join(prep.applied))
-            self.log(f"Detector input: {prep.image.shape[1]}x{prep.image.shape[0]}")
-            self.log(f"Contour count (fruits detected): {count}")
+            self.log(f"\nContour count (fruits detected): {count}")
             if per_class:
                 breakdown = ", ".join(f"{k}: {v}" for k, v in sorted(per_class.items()))
                 self.log(f"Fruit identification -> {breakdown}")
@@ -445,7 +358,6 @@ class PipelineGUI:
             return
         if not self.ensure_model():
             return
-        self.log("")
         self.process_frame(self.current_img)
 
     def start_live(self):
@@ -489,10 +401,9 @@ class PipelineGUI:
 
     def refresh_segmented(self):
         """Redraw the Segmented panel, honouring the mask-overlay toggle.
-        Drawn on the ORIGINAL image, because the masks were mapped back to
-        original-frame coordinates. When there are no detections, still show the
-        current frame so live video keeps updating instead of appearing frozen.
-        """
+        Drawn on the ORIGINAL image, since detection ran on it (matching coords).
+        When there are no detections, still show the current frame (no contours)
+        so live video keeps updating instead of appearing frozen."""
         if self.current_img is None:
             return
         if not self.detections:
@@ -505,7 +416,7 @@ class PipelineGUI:
         if not self.detections:
             messagebox.showwarning("Nothing to export", "Run the pipeline first.")
             return
-        # crops come from the ORIGINAL image, which is where the masks now live
+        # crops come from the ORIGINAL image so masks align; ripeness can re-clean if needed
         session, manifest = export_for_ripeness(self.current_img, self.detections)
         self.log(f"\nExported {len(manifest)} masked fruit crop(s) for the ripeness stage:")
         self.log(f"  {os.path.abspath(session)}")
