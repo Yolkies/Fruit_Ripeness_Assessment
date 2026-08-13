@@ -32,6 +32,8 @@ class PreprocessResult:
     hsv: np.ndarray                 # cached HSV conversion (used by segmentation/ripeness)
     lab: np.ndarray                 # cached LAB conversion
     scale: float                    # resize factor, for mapping measurements back to source
+    crop_rect: tuple
+    uncropped_bgr: np.ndarray
     steps: dict = field(default_factory=dict)   # intermediate images, for debugging/report figures
 
 
@@ -95,8 +97,8 @@ def white_balance(image, saturation_threshold=0.9,
 # ----------------------------------------------------------------------
 # 1.3  Denoise (edge-preserving)
 # ----------------------------------------------------------------------
-def denoise(image, median_ksize=5, bilateral_d=9,
-            bilateral_sigma_colour=75, bilateral_sigma_space=75):
+def denoise(image, median_ksize=3, bilateral_d=2,
+            bilateral_sigma_colour=25   , bilateral_sigma_space=25):
     """Remove speckle and grain while keeping the fruit boundary sharp.
 
     Median blur first: highly effective against salt-and-pepper speckle.
@@ -163,6 +165,39 @@ def remove_specular_highlights(image, v_min=240, s_max=90, inpaint_radius=3):
     return result, glare_mask
 
 
+def otsu_cropping(image, min_area=100, pad_percent=0.20):
+    if image is None:
+        print("Empty image provided to Otsu function.")
+        return None, None
+
+    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+    _, binary = cv.threshold(gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU)
+
+    contours, _ = cv.findContours(binary, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return image, None
+
+    biggest_contour = max(contours, key=cv.contourArea)
+
+    if cv.contourArea(biggest_contour) < min_area:
+        return image, None
+
+    x, y, w, h = cv.boundingRect(biggest_contour)
+    H, W = image.shape[:2]
+
+    pad_x = int(w * pad_percent)
+    pad_y = int(h * pad_percent)
+
+    new_x = max(0, x - pad_x)
+    new_y = max(0, y - pad_y)
+    new_w = min(W - new_x, w + (pad_x * 2))
+    new_h = min(H - new_y, h + (pad_y * 2))
+
+    cropped_image = image[new_y:new_y+new_h, new_x:new_x+new_w]
+
+    return cropped_image, (new_x, new_y, new_w, new_h)
+
 # ----------------------------------------------------------------------
 # 1.6  Full pipeline (packages BGR + HSV + LAB for downstream stages)
 # ----------------------------------------------------------------------
@@ -177,19 +212,20 @@ def preprocess(image, target_long_side=800, keep_steps=False):
     steps = {}
 
     # 1.1
-    img, scale = resize_normalise(image, target_long_side)
+    img2, scale = resize_normalise(image, target_long_side)
     if keep_steps:
-        steps["1.1_resized"] = img.copy()
+        steps["1.1_resized"] = img2.copy()
 
+    img = image.copy()
     # 1.2
     img = white_balance(img)
     if keep_steps:
         steps["1.2_white_balanced"] = img.copy()
 
     # 1.3
-    img = denoise(img)
-    if keep_steps:
-        steps["1.3_denoised"] = img.copy()
+    # img = denoise(img)
+    # if keep_steps:
+    #     steps["1.3_denoised"] = img.copy()
 
     # 1.4
     img, clahe_applied = apply_clahe(img)
@@ -202,6 +238,16 @@ def preprocess(image, target_long_side=800, keep_steps=False):
         steps["1.5_glare_mask"] = glare_mask
         steps["1.5_deglared"] = img.copy()
 
+    uncropped_bgr = img.copy()  
+
+    #otsu
+    img, crop_rect = otsu_cropping(img, min_area=100, pad_percent=0.20)
+    if keep_steps:
+        steps["1.6_cropped"] = img.copy()
+        steps["1.6_crop_rect"] = crop_rect
+
+  
+
     # 1.6  cache colour spaces once
     final_bgr = img
     final_hsv = cv.cvtColor(final_bgr, cv.COLOR_BGR2HSV)
@@ -212,6 +258,8 @@ def preprocess(image, target_long_side=800, keep_steps=False):
         hsv=final_hsv,
         lab=final_lab,
         scale=scale,
+        crop_rect=crop_rect,              
+        uncropped_bgr=uncropped_bgr,     
         steps=steps,
     )
 

@@ -34,10 +34,10 @@ import preprocessing
 
 CLASS_NAMES = ["apple", "banana", "mango", "orange", "strawberry", "tomato"]
 OUTPUT_DIR = "pipeline_output"          # masked crops for the ripeness stage go here
-CONF_THRESHOLD = 0.25                   # detection confidence cut-off
+CONF_THRESHOLD = 0.4               # detection confidence cut-off
 DISPLAY_MAX = 480                       # max px for on-screen preview
 
-MODEL_PATH = r"bestmodel2.pt"
+MODEL_PATH = r"best2.pt"
 
 
 
@@ -52,23 +52,32 @@ def preprocess(img_bgr):
     return result.bgr
 
 
-def segment(model, img_bgr, conf=CONF_THRESHOLD):
+def segment(model, cropped_bgr, crop_rect, orig_shape, conf=CONF_THRESHOLD):
     """
     Flowchart: Fruit Segmentation.
     Returns a list of per-instance dicts: binary mask, class id, confidence.
     """
-    res = model.predict(img_bgr, conf=conf, verbose=False)[0]
-    H, W = img_bgr.shape[:2]
+    res = model.predict(cropped_bgr, conf=conf, verbose=False)[0]
+    H, W = orig_shape[:2]
+    cx, cy, cw, ch = crop_rect
+
     detections = []
     if res.masks is None:
         return detections
+    
     masks = res.masks.data.cpu().numpy()          # (N, mh, mw) in 0..1
     cls_ids = res.boxes.cls.cpu().numpy().astype(int)
     confs = res.boxes.conf.cpu().numpy()
     for m, c, cf in zip(masks, cls_ids, confs):
-        mask = (m > 0.5).astype("uint8") * 255
-        mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
-        detections.append({"mask": mask, "cls": int(c), "conf": float(cf)})
+        mask_resized = cv2.resize(m, (cw, ch), interpolation=cv2.INTER_NEAREST)
+        mask_binary = (mask_resized > 0.5).astype("uint8") * 255
+        
+        global_mask = np.zeros((H, W), dtype="uint8")
+        
+        global_mask[cy:cy+ch, cx:cx+cw] = mask_binary
+        
+        detections.append({"mask": global_mask, "cls": int(c), "conf": float(cf)})
+        
     return detections
 
 
@@ -325,20 +334,29 @@ class PipelineGUI:
     def process_frame(self, img_bgr, log_result=True):
         """Full flowchart on one BGR image; updates all three panels.
         Returns (count, per_class). Shared by single-run and live video.
-
-        Note: DETECTION runs on the ORIGINAL image (the model was trained on
-        normal photos, so preprocessing that neutralises colour hurts it). The
-        preprocessed image is still produced and shown, and is what gets handed
-        to the ripeness stage, which is what it was designed for.
         """
         self.current_img = img_bgr
-        self.pre_img = preprocess(img_bgr)                     # Preprocessing (for ripeness)
-        self.detections = segment(self.model, self.current_img)  # Segmentation on ORIGINAL
-        count = contour_count(self.detections)                # Contour Count
+        
+        # 1. Run Preprocessing (returns PreprocessResult with Otsu crop info)
+        prep_result = preprocessing.preprocess(img_bgr) 
+        
+        # Fallback safety check if Otsu found no objects (crop_rect is None)
+        if prep_result.crop_rect is None:
+            cropped_bgr = img_bgr
+            crop_rect = (0, 0, img_bgr.shape[1], img_bgr.shape[0])
+        else:
+            cropped_bgr = prep_result.bgr
+            crop_rect = prep_result.crop_rect
+            
+        self.pre_img = cropped_bgr
+        
+        self.detections = segment(self.model, cropped_bgr, crop_rect, img_bgr.shape)
+        
+        count = contour_count(self.detections)
 
         self.show("orig", self.current_img)
         self.show("pre", self.pre_img)
-        self.refresh_segmented()                              # Segmented panel
+        self.refresh_segmented() 
 
         per_class = {}
         for d in self.detections:
@@ -347,7 +365,13 @@ class PipelineGUI:
             self.log(f"\nContour count (fruits detected): {count}")
             if per_class:
                 breakdown = ", ".join(f"{k}: {v}" for k, v in sorted(per_class.items()))
-                self.log(f"Fruit identification -> {breakdown}")
+                self.log(f"Fruit summary -> {breakdown}")
+                self.log("Individual detections:")
+                for i, d in enumerate(self.detections):
+                    fruit_name = CLASS_NAMES[d["cls"]]
+                    confidence = d["conf"]
+                    self.log(f"  Fruit {i+1}: {fruit_name} (Confidence: {confidence:.2f})")
+                
             else:
                 self.log("No fruit detected (image may be a negative/background).")
         return count, per_class
