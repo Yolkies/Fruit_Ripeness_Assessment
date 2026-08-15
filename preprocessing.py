@@ -27,13 +27,12 @@ import numpy as np
 # ----------------------------------------------------------------------
 @dataclass
 class PreprocessResult:
-    """Bundle of outputs produced by the preprocessing pipeline."""
     bgr: np.ndarray                 # final cleaned image (BGR)
     hsv: np.ndarray                 # cached HSV conversion (used by segmentation/ripeness)
     lab: np.ndarray                 # cached LAB conversion
     scale: float                    # resize factor, for mapping measurements back to source
-    crop_rect: tuple
-    uncropped_bgr: np.ndarray
+    crops: list
+    crop_rects: list
     steps: dict = field(default_factory=dict)   # intermediate images, for debugging/report figures
 
 
@@ -165,50 +164,50 @@ def remove_specular_highlights(image, v_min=240, s_max=90, inpaint_radius=3):
     return result, glare_mask
 
 
-def otsu_cropping(image, min_area=100, pad_percent=0.20):
+def otsu_cropping(image, min_area=2000, pad_percent=0.20):
     if image is None:
         print("Empty image provided to Otsu function.")
-        return None, None
+        return [], []
 
-    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-    _, binary = cv.threshold(gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU)
+    hsv = cv.cvtColor(image, cv.COLOR_BGR2HSV)
+    _, S, _ = cv.split(hsv)
+    blurred_sv = cv.GaussianBlur(S, (11, 11), 0)
 
-    contours, _ = cv.findContours(binary, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    _, otsu_mask = cv.threshold(blurred_sv, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
 
-    if not contours:
-        return image, None
+    clean_kernel = np.ones((7, 7), np.uint8)
+    clean_mask = cv.morphologyEx(otsu_mask, cv.MORPH_CLOSE, clean_kernel, iterations=1)
+    clean_mask = cv.morphologyEx(clean_mask, cv.MORPH_OPEN, clean_kernel, iterations=1)
+    extended_mask = cv.dilate(clean_mask, np.ones((5, 5), np.uint8), iterations=1)
 
-    biggest_contour = max(contours, key=cv.contourArea)
+    contours, _ = cv.findContours(extended_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
-    if cv.contourArea(biggest_contour) < min_area:
-        return image, None
-
-    x, y, w, h = cv.boundingRect(biggest_contour)
     H, W = image.shape[:2]
+    crops, rects = [], []
 
-    pad_x = int(w * pad_percent)
-    pad_y = int(h * pad_percent)
+    for contour in sorted(contours, key=lambda c: cv.boundingRect(c)[0]):
+        if cv.contourArea(contour) < min_area:
+            continue
 
-    new_x = max(0, x - pad_x)
-    new_y = max(0, y - pad_y)
-    new_w = min(W - new_x, w + (pad_x * 2))
-    new_h = min(H - new_y, h + (pad_y * 2))
+        x, y, w, h = cv.boundingRect(contour)
+        pad_x = int(w * pad_percent)
+        pad_y = int(h * pad_percent)
 
-    cropped_image = image[new_y:new_y+new_h, new_x:new_x+new_w]
+        new_x = max(0, x - pad_x)
+        new_y = max(0, y - pad_y)
+        new_w = min(W - new_x, w + (pad_x * 2))
+        new_h = min(H - new_y, h + (pad_y * 2))
 
-    return cropped_image, (new_x, new_y, new_w, new_h)
+        crops.append(image[new_y:new_y+new_h, new_x:new_x+new_w])
+        rects.append((new_x, new_y, new_w, new_h))
+
+    return crops, rects
 
 # ----------------------------------------------------------------------
 # 1.6  Full pipeline (packages BGR + HSV + LAB for downstream stages)
 # ----------------------------------------------------------------------
 def preprocess(image, target_long_side=800, keep_steps=False):
-    """Run the complete Stage 1 pipeline on a BGR image.
-
-    Set ``keep_steps=True`` to also return every intermediate image (useful for
-    generating the before/after figures in the report). The returned object
-    carries the cleaned BGR image plus cached HSV and LAB versions, so Stage 2
-    never has to re-convert.
-    """
+ 
     steps = {}
 
     # 1.1
@@ -218,9 +217,9 @@ def preprocess(image, target_long_side=800, keep_steps=False):
 
     img = image.copy()
     # 1.2
-    img = white_balance(img)
-    if keep_steps:
-        steps["1.2_white_balanced"] = img.copy()
+    # img = white_balance(img)
+    # if keep_steps:
+    #     steps["1.2_white_balanced"] = img.copy()
 
     # 1.3
     # img = denoise(img)
@@ -233,20 +232,16 @@ def preprocess(image, target_long_side=800, keep_steps=False):
         steps["1.4_clahe"] = img.copy()
 
     # 1.5
-    img, glare_mask = remove_specular_highlights(img)
-    if keep_steps:
-        steps["1.5_glare_mask"] = glare_mask
-        steps["1.5_deglared"] = img.copy()
-
-    uncropped_bgr = img.copy()  
+    # img, glare_mask = remove_specular_highlights(img)
+    # if keep_steps:
+    #     steps["1.5_glare_mask"] = glare_mask
+    #     steps["1.5_deglared"] = img.copy()
 
     #otsu
-    img, crop_rect = otsu_cropping(img, min_area=100, pad_percent=0.20)
+    crops, crop_rects = otsu_cropping(img)
     if keep_steps:
-        steps["1.6_cropped"] = img.copy()
-        steps["1.6_crop_rect"] = crop_rect
-
-  
+        steps["1.6_crops"] = crops
+        steps["1.6_crop_rects"] = crop_rects
 
     # 1.6  cache colour spaces once
     final_bgr = img
@@ -258,8 +253,8 @@ def preprocess(image, target_long_side=800, keep_steps=False):
         hsv=final_hsv,
         lab=final_lab,
         scale=scale,
-        crop_rect=crop_rect,              
-        uncropped_bgr=uncropped_bgr,     
+        crops=crops,
+        crop_rects=crop_rects,
         steps=steps,
     )
 
