@@ -34,10 +34,10 @@ import preprocessing
 
 CLASS_NAMES = ["apple", "banana", "mango", "orange", "strawberry", "tomato"]
 OUTPUT_DIR = "pipeline_output"          # masked crops for the ripeness stage go here
-CONF_THRESHOLD = 0.5              # detection confidence cut-off
+CONF_THRESHOLD = 0.2              # detection confidence cut-off
 DISPLAY_MAX = 480                       # max px for on-screen preview
 
-MODEL_PATH = r"bestmodel2.pt"
+MODEL_PATH = r"best.pt"
 
 
 
@@ -366,7 +366,7 @@ class PipelineGUI:
 
     def capture_camera(self):
         """Live preview inside the app (no cv2.imshow window). SPACE captures."""
-        cap = cv2.VideoCapture(2)
+        cap = cv2.VideoCapture(1)
         if not cap.isOpened():
             messagebox.showerror("Camera", "Could not open camera.")
             return
@@ -472,7 +472,7 @@ class PipelineGUI:
             return
         if not self.ensure_model():
             return
-        self.cap = cv2.VideoCapture(2)
+        self.cap = cv2.VideoCapture(1)
         if not self.cap.isOpened():
             messagebox.showerror("Camera", "Could not open camera.")
             self.cap = None
