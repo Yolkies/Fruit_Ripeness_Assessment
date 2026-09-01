@@ -1,0 +1,24 @@
+======================================================================
+INPUT FILE             : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\dataset\Orange\Orange0016.png
+FOLDER NAME            : Orange0016.png
+======================================================================
+YOLO confidence        : 0.9713
+YOLO ROI pixels        : 3164
+
+PIXEL COUNTS
+Yellow/orange pixels   : 3129 (CCI >= 0)
+Non-yellow/orange pixels: 35 (CCI < 0)
+Undefined CCI pixels   : 0
+
+COVERAGE
+Yellow/orange coverage : 98.89%
+Non-yellow/orange cov. : 1.11%
+Undefined CCI coverage : 0.00%
+
+CCI SUMMARY
+Mean CCI               : 4.96
+Median CCI             : 4.65
+
+Prediction             : Index 5 - Fully Ripe
+Rule basis             : Yellow/orange coverage=98.89% (>=90%).
+Saved to               : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\orange_ripeness\orange_full_test_debug\Orange0016.png

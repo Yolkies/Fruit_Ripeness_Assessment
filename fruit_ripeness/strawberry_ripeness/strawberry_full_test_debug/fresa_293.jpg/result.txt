@@ -1,0 +1,15 @@
+============================================================
+INPUT FILE            : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\dataset\stawberry\strawberryDataset\UnPickable\fresa_293.jpg
+FOLDER NAME           : fresa_293.jpg
+============================================================
+YOLO confidence       : 0.9770
+YOLO ROI pixels       : 438812
+Red pixels            : 0
+Dark-red pixels       : 0
+Red coverage          : 0.00%
+Normal-red coverage   : 0.00%
+Dark-red coverage     : 0.00%
+Other coverage        : 100.00%
+Prediction            : Index 1 - Unripe
+Rule basis            : Project operational rule: red coverage <10% is treated as Index 1. This is used to represent the FAMA description of a greenish-cream unripe strawberry.
+Saved to              : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\strawberry_ripeness\strawberry_full_test_debug\fresa_293.jpg

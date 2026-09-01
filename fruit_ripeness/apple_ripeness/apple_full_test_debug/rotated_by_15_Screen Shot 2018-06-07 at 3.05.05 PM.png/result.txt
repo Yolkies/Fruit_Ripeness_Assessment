@@ -1,0 +1,20 @@
+======================================================================
+INPUT FILE             : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\dataset\Fruit And Vegetable Diseases Dataset\Apple__Rotten\rotated_by_15_Screen Shot 2018-06-07 at 3.05.05 PM.png
+FOLDER NAME            : rotated_by_15_Screen Shot 2018-06-07 at 3.05.05 PM.png
+======================================================================
+YOLO confidence        : 0.7773
+YOLO ROI pixels        : 88403
+
+PIXEL COUNTS
+Red pixels             : 76723 (H 0-15 or 175-179)
+Yellow pixels          : 4126 (H 20-25)
+Other pixels           : 7554
+
+COVERAGE
+Red coverage           : 86.79%
+Yellow coverage        : 4.67%
+Other coverage         : 8.54%
+
+Prediction             : Index 5 - Stage 5
+Rule basis             : Red coverage=86.79% (>=80%).
+Saved to               : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\fruit_ripeness\apple_ripeness\apple_full_test_debug\rotated_by_15_Screen Shot 2018-06-07 at 3.05.05 PM.png

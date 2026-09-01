@@ -1,0 +1,29 @@
+======================================================================
+INPUT FILE             : c:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\dataset\tomato\Tomato__Healthy\freshTomato (18).png
+FOLDER NAME            : freshTomato (18).png
+======================================================================
+YOLO confidence        : 0.9739
+YOLO ROI pixels        : 8495
+
+PIXEL COUNTS
+Green pixels           : 466
+Turning pixels         : 243
+Pink pixels            : 2740
+Mature/red pixels      : 5017
+Colour-break pixels    : 8000 (Turning + Pink + Mature/red)
+Red-orange pixels      : 7757 (Pink + Mature/red)
+
+COVERAGE
+Green coverage         : 5.49%
+Colour-break coverage  : 94.17%
+Red-orange coverage    : 91.31%
+Other coverage         : 0.34%
+
+INDEX 5 / 6 L* CHECK
+Mean L* mature-red     : 30.57
+Median L* mature-red   : 28.24
+L* Index 5/6 threshold : 40.70
+
+Prediction             : Index 4 - Three-quarter ripe
+Rule basis             : Red/orange coverage (pink + mature/red)=91.31% (>75%). Mature/red coverage=59.06% (<=90%).
+Saved to               : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\tomato_ripeness\tomato_full_test_debug\freshTomato (18).png

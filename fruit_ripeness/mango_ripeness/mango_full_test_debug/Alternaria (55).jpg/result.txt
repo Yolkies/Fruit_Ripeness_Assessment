@@ -1,0 +1,18 @@
+======================================================================
+INPUT FILE             : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\dataset\MangoFruitBD\test\Alternaria (55).jpg
+FOLDER NAME            : Alternaria (55).jpg
+======================================================================
+YOLO confidence        : 0.7473
+YOLO ROI pixels        : 2775494
+
+PIXEL COUNTS
+Yellow pixels          : 1998110 (H 15-30, S 135-255, V 80-255)
+Other pixels           : 777384
+
+COVERAGE
+Yellow coverage        : 71.99%
+Other coverage         : 28.01%
+
+Prediction             : Stage 4
+Rule basis             : Yellow coverage=71.99% (>70%).
+Saved to               : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\mango_ripeness\mango_full_test_debug\Alternaria (55).jpg

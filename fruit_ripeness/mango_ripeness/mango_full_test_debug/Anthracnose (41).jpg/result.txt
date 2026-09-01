@@ -1,0 +1,18 @@
+======================================================================
+INPUT FILE             : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\dataset\MangoFruitBD\test\Anthracnose (41).jpg
+FOLDER NAME            : Anthracnose (41).jpg
+======================================================================
+YOLO confidence        : 0.3462
+YOLO ROI pixels        : 15207
+
+PIXEL COUNTS
+Yellow pixels          : 2819 (H 15-30, S 135-255, V 80-255)
+Other pixels           : 12388
+
+COVERAGE
+Yellow coverage        : 18.54%
+Other coverage         : 81.46%
+
+Prediction             : Stage 2
+Rule basis             : Yellow coverage=18.54% (>10% and <=40%).
+Saved to               : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\mango_ripeness\mango_full_test_debug\Anthracnose (41).jpg

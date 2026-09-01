@@ -1,0 +1,38 @@
+==========================================================================
+INPUT FILE                  : c:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\dataset\Fruit And Vegetable Diseases Dataset\Banana__Rotten\rotated_by_15_Screen Shot 2018-06-12 at 8.47.14 PM.png
+FOLDER NAME                 : rotated_by_15_Screen Shot 2018-06-12 at 8.47.14 PM.png
+==========================================================================
+YOLO confidence             : 0.9537
+YOLO ROI pixels             : 61623
+
+PIXEL RULES
+Yellow                     : OpenCV H 20-35, S 40-255, V 80-255
+Brown                      : OpenCV H 0-25, S 64-255, V 0-153
+
+DECISION RULE ORDER
+Brown >= 20%               : Index 7 - Overripe (checked FIRST)
+Small brown on yellow      : Index 7 - Brown-spotted
+Yellow <= 1%               : Index 1
+Yellow < 30%               : Index 2
+30% <= Yellow < 50%        : Index 3
+50% <= Yellow <= 80%       : Index 4
+80% < Yellow < 95%         : Index 5
+Yellow >= 95%              : Index 6
+
+PIXEL COUNTS
+Yellow pixels                : 19807
+Brown pixels                 : 11458
+Developed peel pixels        : 31265
+Other pixels                 : 30358
+
+COVERAGE
+Yellow coverage              : 32.14%
+Brown coverage               : 18.59%
+Developed peel coverage      : 50.74%
+Other coverage               : 49.26%
+
+Ripeness Factor (RF)         : 0.185937
+
+Prediction                   : Index 3 - 30-50% yellow
+Rule basis                   : Yellow coverage=32.14% is >=30% and <50%.
+Saved to                     : C:\Users\Lenovo\OneDrive\Desktop\UNI\UNI_ASSIGNMENT\Fruit_Ripeness_Assessment\fruit_ripeness\banana_ripeness\banana_full_test_debug\rotated_by_15_Screen Shot 2018-06-12 at 8.47.14 PM.png
