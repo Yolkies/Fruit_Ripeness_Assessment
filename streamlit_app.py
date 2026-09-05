@@ -1,12 +1,25 @@
-import streamlit as st
-import time
+import io
+import os
+import subprocess
+import sys
+import zipfile
 
 import cv2
 import numpy as np
+import streamlit as st
 
-from Backend.camera import Camera
-from detection import detect_image
-from ripeness import assess_detected_fruit
+import detection
+import preprocessing
+import ripeness
+import training
+from detection import annotate, contour_count, export_for_ripeness, segment
+from params_spec import (
+    detection_sections,
+    preprocessing_sections,
+    ripeness_sections,
+)
+
+st.set_page_config(page_title="Fruit Ripeness Assessment", layout="wide")
 
 
 # ============================================================
@@ -428,303 +441,383 @@ def create_isolated_region(image_bgr, mask):
 
 
 # ---------------------------------
-# existing Streamlit UI
+# Parameter sidebar (modules 2.1 / 2.2 / 2.3)
 # ---------------------------------
 
-st.title("Camera Feed")
+def render_param(param):
+    key = param.key()
+    if key not in st.session_state:
+        st.session_state[key] = param.get()
 
-run = st.checkbox("Start Camera")
-
-frame_placeholder = st.empty()
-
-camera = Camera(0)
-
-while run:
-    frame = camera.get_frame()
-
-    if frame is None:
-        st.error("Failed to access camera.")
-        break
-
-    frame_placeholder.image(frame, channels="RGB")
-
-    time.sleep(0.03)
-
-camera.release()
+    if param.kind == "bool":
+        value = st.checkbox(param.label, key=key)
+    elif param.kind == "text":
+        value = st.text_input(param.label, key=key)
+    elif param.kind == "int":
+        value = st.slider(param.label, int(param.lo), int(param.hi), step=1, key=key)
+    else:
+        step = float(param.step) if param.step else 0.01
+        value = st.slider(param.label, float(param.lo), float(param.hi),
+                          step=step, key=key)
+    param.set(value)
 
 
-
-# ============================================================
-# IMAGE UPLOAD
-# ============================================================
-
-st.markdown("## Fruit Ripeness Assessment")
-
-uploaded_file = st.file_uploader(
-    "Choose a fruit image",
-    type=["jpg", "jpeg", "png"]
-)
+def render_sections(sections, prefix):
+    for title, params in sections:
+        with st.expander(title):
+            for param in params:
+                render_param(param)
 
 
-if uploaded_file is not None:
+def reset_sections(sections):
+    for _, params in sections:
+        for param in params:
+            param.set(param.default)
+            st.session_state.pop(param.key(), None)
 
-    current_file = uploaded_file.name
 
-    # Clear old result when another file is selected
-    if (
-        "last_uploaded_file" not in st.session_state
-        or
-        st.session_state["last_uploaded_file"] != current_file
-    ):
+def render_sidebar():
+    st.sidebar.title("Parameters")
 
-        st.session_state[
-            "last_uploaded_file"
-        ] = current_file
+    tab1, tab2, tab3 = st.sidebar.tabs(["2.1 Pre", "2.2 Detect", "2.3 Ripeness"])
 
-        st.session_state.pop(
-            "detection_result",
-            None
-        )
+    with tab1:
+        sections = preprocessing_sections()
+        render_sections(sections, "p21")
+        if st.button("Reset 2.1", key="reset21"):
+            reset_sections(sections)
+            st.rerun()
 
-        st.session_state.pop(
-            "ripeness_result",
-            None
-        )
+    with tab2:
+        sections = detection_sections()
+        render_sections(sections, "p22")
+        resolved = detection.resolve_path(detection.PARAMS.model_path)
+        if os.path.exists(resolved):
+            st.caption(f"weights found: {detection.PARAMS.model_path}")
+        else:
+            st.error(f"weights NOT found: {detection.PARAMS.model_path}")
+        if st.button("Reset 2.2", key="reset22"):
+            reset_sections(sections)
+            st.rerun()
 
-    # --------------------------------------------------------
-    # Convert uploaded image to OpenCV BGR
-    # --------------------------------------------------------
+    with tab3:
+        fruit = st.selectbox("Fruit", list(ripeness.FRUIT_MODULES), key="ripe_fruit")
+        sections = ripeness_sections(fruit)
+        render_sections(sections, f"p23_{fruit}")
+        if st.button(f"Reset {fruit}", key=f"reset23_{fruit}"):
+            reset_sections(sections)
+            st.rerun()
 
-    file_bytes = np.frombuffer(
-        uploaded_file.getvalue(),
-        dtype=np.uint8
-    )
 
-    image_bgr = cv2.imdecode(
-        file_bytes,
-        cv2.IMREAD_COLOR
-    )
+# ---------------------------------
+# Pipeline (modules 2.1 -> 2.2)
+# ---------------------------------
+
+def build_crop_grid(crops, panel=380):
+    if not crops:
+        return None
+    cols = 1 if len(crops) == 1 else 2
+    rows = 1 if len(crops) <= 2 else 2
+    tw, th = panel // cols, panel // rows
+    grid = np.full((th * rows, tw * cols, 3), 238, dtype=np.uint8)
+    for i, crop in enumerate(crops[:cols * rows]):
+        h, w = crop.shape[:2]
+        s = min(tw / w, th / h)
+        rw, rh = max(1, int(w * s)), max(1, int(h * s))
+        small = cv2.resize(crop, (rw, rh))
+        r, col = divmod(i, cols)
+        y0 = r * th + (th - rh) // 2
+        x0 = col * tw + (tw - rw) // 2
+        grid[y0:y0 + rh, x0:x0 + rw] = small
+    return grid
+
+
+def run_pipeline(image_bgr):
+    prep = preprocessing.preprocess(image_bgr)
+
+    if not prep.crops:
+        crops = [prep.bgr]
+        crop_rects = [(0, 0, prep.bgr.shape[1], prep.bgr.shape[0])]
+    else:
+        crops = prep.crops
+        crop_rects = prep.crop_rects
+
+    model = detection.load_model()
+    detections = segment(model, crops, crop_rects, image_bgr.shape)
+    count = contour_count(detections)
+
+    prepared = []
+    for i, d in enumerate(detections, start=1):
+        crop, mask, masked = detection.crop_detection_from_original(image_bgr, d)
+        prepared.append({
+            "number": i,
+            "yolo_fruit_type": detection.CLASS_NAMES[int(d["cls"])],
+            "confidence": float(d["conf"]),
+            "crop": crop,
+            "fruit_mask": mask,
+            "masked_crop": masked,
+        })
+
+    return {
+        "image": image_bgr,
+        "crops": crops,
+        "detections": detections,
+        "prepared": prepared,
+        "count": count,
+    }
+
+
+def display_stages(result, show_mask):
+    image = result["image"]
+    detections = result["detections"]
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**1. Original**")
+        st.image(image, channels="BGR", use_container_width=True)
+    with col2:
+        st.markdown(f"**2. Preprocessed** ({len(result['crops'])} object crops)")
+        grid = build_crop_grid(result["crops"])
+        if grid is not None:
+            st.image(grid, channels="BGR", use_container_width=True)
+    with col3:
+        st.markdown("**3. Segmented + Contours**")
+        st.image(annotate(image, detections, show_mask=show_mask),
+                 channels="BGR", use_container_width=True)
+
+    st.info(f"Contour count (fruits detected): {result['count']}")
+
+    if detections:
+        summary = {}
+        for d in detections:
+            name = detection.CLASS_NAMES[d["cls"]]
+            summary[name] = summary.get(name, 0) + 1
+        st.write("**Fruit summary:** " +
+                 ", ".join(f"{k}: {v}" for k, v in sorted(summary.items())))
+        rows = [{"Fruit": i + 1,
+                 "Type": detection.CLASS_NAMES[d["cls"]],
+                 "Confidence": round(d["conf"], 3),
+                 "Contour area (px)": round(d.get("area", 0), 1)}
+                for i, d in enumerate(detections)]
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def per_instance_view(result, show_mask):
+    detections = result["detections"]
+    if not detections:
+        return
+    labels = ["All"] + [f"{i + 1}: {detection.CLASS_NAMES[d['cls']]}"
+                        for i, d in enumerate(detections)]
+    choice = st.selectbox("Inspect instance", labels, key="seg_instance")
+    if choice == "All":
+        return
+    index = labels.index(choice) - 1
+    d = detections[index]
+    annotated = annotate(result["image"], [d], show_mask=show_mask)
+    x, y, w, h = cv2.boundingRect(d["mask"])
+    if w and h:
+        pad = int(max(w, h) * 0.15)
+        H, W = annotated.shape[:2]
+        annotated = annotated[max(0, y - pad):min(H, y + h + pad),
+                              max(0, x - pad):min(W, x + w + pad)]
+    st.image(annotated, channels="BGR", use_container_width=False)
+
+
+def export_section(result):
+    if not result["detections"]:
+        return
+    if not st.button("Export masked crops for ripeness", key="export"):
+        return
+    session, manifest = export_for_ripeness(result["image"], result["detections"])
+    st.success(f"Exported {len(manifest)} masked crop(s) to {session}")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in os.listdir(session):
+            archive.write(os.path.join(session, name), name)
+    st.download_button("Download export as .zip", buffer.getvalue(),
+                       file_name=f"{os.path.basename(session)}.zip",
+                       mime="application/zip")
+
+
+# ---------------------------------
+# Training
+# ---------------------------------
+
+def training_section():
+    st.markdown("### Model training")
+    include = st.checkbox("Include false images", value=training.PARAMS.include_negatives,
+                          key="train_negatives")
+    training.PARAMS.include_negatives = include
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        training.PARAMS.epochs = st.number_input("Epochs", 1, 1000,
+                                                 training.PARAMS.epochs, key="train_epochs")
+    with col2:
+        training.PARAMS.batch = st.number_input("Batch", 1, 64,
+                                                training.PARAMS.batch, key="train_batch")
+    with col3:
+        training.PARAMS.workers = st.number_input("Workers", 0, 16,
+                                                  training.PARAMS.workers, key="train_workers")
+
+    run_name = training.run_name_for()
+    st.caption(f"Dataset: {training.PARAMS.dataset_dir} -> "
+               f"run: {training.PARAMS.runs_dir}/{run_name}")
+    st.warning("This rebuilds the dataset folder and overwrites that run folder, "
+               "including its current best.pt.")
+
+    if not st.button("Build dataset and train", key="train_go", type="primary"):
+        return
+
+    weights = f"{training.PARAMS.runs_dir}/{run_name}/weights/best.pt"
+    command = [
+        sys.executable, "-u", "training.py",
+        "--negatives", "1" if include else "0",
+        "--epochs", str(training.PARAMS.epochs),
+        "--batch", str(training.PARAMS.batch),
+        "--workers", str(training.PARAMS.workers),
+        "--imgsz", str(training.PARAMS.imgsz),
+        "--device", str(training.PARAMS.device),
+    ]
+
+    log_box = st.empty()
+    lines = []
+    with st.spinner("Training..."):
+        process = subprocess.Popen(
+            command, cwd=str(training.PROJECT_ROOT),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace")
+        for line in process.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            lines.append(line)
+            log_box.code("\n".join(lines[-25:]))
+        code = process.wait()
+
+    if code == 0:
+        st.success(f"Training complete: {weights}")
+        if os.path.exists(detection.resolve_path(weights)):
+            detection.PARAMS.model_path = weights
+            st.session_state.pop(
+                f"{detection.PARAMS.__class__.__name__}.model_path.()", None)
+            st.info("Detection now uses the newly trained weights.")
+    else:
+        st.error(f"training.py exited with code {code}")
+
+
+# ---------------------------------
+# Main
+# ---------------------------------
+
+render_sidebar()
+
+st.title("Fruit Ripeness Assessment")
+
+tab_analyse, tab_train = st.tabs(["Analyse", "Train"])
+
+with tab_train:
+    training_section()
+
+with tab_analyse:
+    source = st.radio("Input", ["Upload image", "Camera"], horizontal=True, key="source")
+
+    image_bgr = None
+    source_name = None
+
+    if source == "Upload image":
+        uploaded_file = st.file_uploader("Choose a fruit image",
+                                         type=["jpg", "jpeg", "png", "bmp"])
+        if uploaded_file is not None:
+            data = np.frombuffer(uploaded_file.getvalue(), dtype=np.uint8)
+            image_bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            source_name = uploaded_file.name
+    else:
+        shot = st.camera_input("Take a picture")
+        if shot is not None:
+            data = np.frombuffer(shot.getvalue(), dtype=np.uint8)
+            image_bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            source_name = "camera"
 
     if image_bgr is None:
-
-        st.error(
-            "Unable to read selected image."
-        )
-
+        st.info("Upload an image or take a picture to begin.")
     else:
+        if st.session_state.get("last_source") != source_name:
+            st.session_state["last_source"] = source_name
+            st.session_state.pop("pipeline_result", None)
+            st.session_state.pop("ripeness_result", None)
 
-        st.markdown("### Selected Image")
+        show_mask = st.checkbox("Show mask overlay", value=True, key="show_mask")
 
-        st.image(
-            image_bgr,
-            channels="BGR",
-            caption=uploaded_file.name,
-            use_container_width=True
-        )
+        if st.button("Run pipeline", type="primary", key="run"):
+            try:
+                with st.spinner("Running modules 2.1 and 2.2..."):
+                    st.session_state["pipeline_result"] = run_pipeline(image_bgr)
+                st.session_state.pop("ripeness_result", None)
+            except Exception as exc:
+                st.error(f"Pipeline failed: {exc}")
 
-        # ====================================================
-        # STEP 1 - YOLO DETECTION
-        # ====================================================
+        result = st.session_state.get("pipeline_result")
+        if result is not None:
+            display_stages(result, show_mask)
+            per_instance_view(result, show_mask)
+            export_section(result)
 
-        if st.button(
-            "Detect Fruit",
-            type="primary"
-        ):
+            if result["count"] == 0:
+                st.warning("No fruit detected.")
+            else:
+                st.markdown("### Confirm fruit type")
+                labels = [f"{d['number']}: {d['yolo_fruit_type']} "
+                          f"({d['confidence'] * 100:.1f}%)" for d in result["prepared"]]
+                picked = st.selectbox("Detected fruit", labels, key="pick_fruit")
+                detected = result["prepared"][labels.index(picked)]
 
-            with st.spinner(
-                "Detecting fruit..."
-            ):
+                options = [n.title() for n in detection.CLASS_NAMES]
+                predicted = detected["yolo_fruit_type"].title()
+                selected = st.selectbox(
+                    "If YOLO is wrong, select the correct fruit:",
+                    options,
+                    index=options.index(predicted) if predicted in options else 0,
+                    key="override_fruit")
 
-                try:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"Continue with {predicted}", type="primary",
+                                 use_container_width=True, key="go_yolo"):
+                        try:
+                            with st.spinner(f"Analyzing {predicted} ripeness..."):
+                                st.session_state["ripeness_result"] = \
+                                    assess_detected_fruit(detected)
+                        except Exception as exc:
+                            st.error(f"Ripeness assessment failed: {exc}")
+                with col2:
+                    if st.button(f"Analyze as {selected}",
+                                 disabled=selected == predicted,
+                                 use_container_width=True, key="go_override"):
+                        try:
+                            with st.spinner(f"Analyzing {selected} ripeness..."):
+                                st.session_state["ripeness_result"] = \
+                                    assess_detected_fruit(detected,
+                                                          selected_fruit_type=selected)
+                        except Exception as exc:
+                            st.error(f"Ripeness assessment failed: {exc}")
 
-                    detection_result = detect_image(
-                        image_bgr
-                    )
+                if st.button("Assess ALL detected fruits", key="go_all"):
+                    results = []
+                    for d in result["prepared"]:
+                        try:
+                            results.append(assess_detected_fruit(d))
+                        except Exception as exc:
+                            st.error(f"Fruit {d['number']} failed: {exc}")
+                    st.session_state["ripeness_all"] = results
+                    st.session_state.pop("ripeness_result", None)
 
-                    st.session_state[
-                        "detection_result"
-                    ] = detection_result
+        if "ripeness_result" in st.session_state:
+            st.markdown("## Ripeness Assessment")
+            display_fruit_result(st.session_state["ripeness_result"])
 
-                    st.session_state.pop(
-                        "ripeness_result",
-                        None
-                    )
-
-                except Exception as e:
-
-                    st.error(
-                        f"Fruit detection failed: {e}"
-                    )
-
-# ============================================================
-# STEP 2 - CONFIRM YOLO FRUIT TYPE
-# ============================================================
-
-if "detection_result" in st.session_state:
-
-    detection_result = st.session_state[
-        "detection_result"
-    ]
-
-    if detection_result["count"] == 0:
-
-        st.warning(
-            "No fruit detected."
-        )
-
-    else:
-
-        st.markdown("## Fruit Detection")
-
-        st.image(
-            detection_result[
-                "annotated_image"
-            ],
-            channels="BGR",
-            caption="YOLO Fruit Detection",
-            use_container_width=True
-        )
-
-        detected_fruit = (
-            detection_result[
-                "detections"
-            ][0]
-        )
-
-        predicted_fruit = (
-            detected_fruit[
-                "yolo_fruit_type"
-            ].title()
-        )
-
-        confidence = detected_fruit[
-            "confidence"
-        ]
-
-        st.info(
-            f"YOLO predicts: "
-            f"**{predicted_fruit}** "
-            f"({confidence * 100:.1f}% confidence)"
-        )
-
-        st.markdown(
-            "### Is this fruit correct?"
-        )
-
-        fruit_options = [
-            "Apple",
-            "Banana",
-            "Mango",
-            "Orange",
-            "Strawberry",
-            "Tomato",
-        ]
-
-        default_index = (
-            fruit_options.index(
-                predicted_fruit
-            )
-            if predicted_fruit
-            in fruit_options
-            else 0
-        )
-
-        selected_fruit = st.selectbox(
-            "If YOLO is wrong, select the correct fruit:",
-            fruit_options,
-            index=default_index,
-        )
-
-        col1, col2 = st.columns(2)
-
-        # ----------------------------------------------------
-        # Continue with YOLO result
-        # ----------------------------------------------------
-
-        with col1:
-
-            if st.button(
-                f"Continue with {predicted_fruit}",
-                type="primary",
-                use_container_width=True
-            ):
-
-                try:
-
-                    with st.spinner(
-                        f"Analyzing {predicted_fruit} ripeness..."
-                    ):
-
-                        fruit_result = (
-                            assess_detected_fruit(
-                                detected_fruit
-                            )
-                        )
-
-                    st.session_state[
-                        "ripeness_result"
-                    ] = fruit_result
-
-                except Exception as e:
-
-                    st.error(
-                        f"Ripeness assessment failed: {e}"
-                    )
-
-        # ----------------------------------------------------
-        # Override YOLO result
-        # ----------------------------------------------------
-
-        override_disabled = (
-            selected_fruit == predicted_fruit
-        )
-
-        with col2:
-
-            if st.button(
-                f"Analyze as {selected_fruit}",
-                disabled=override_disabled,
-                use_container_width=True
-            ):
-
-                try:
-
-                    with st.spinner(
-                        f"Analyzing {selected_fruit} ripeness..."
-                    ):
-
-                        fruit_result = (
-                            assess_detected_fruit(
-                                detected_fruit,
-                                selected_fruit_type=selected_fruit
-                            )
-                        )
-
-                    st.session_state[
-                        "ripeness_result"
-                    ] = fruit_result
-
-                except Exception as e:
-
-                    st.error(
-                        f"Ripeness assessment failed: {e}"
-                    )
-
-
-# ============================================================
-# FINAL RIPENESS RESULT
-# ============================================================
-
-if "ripeness_result" in st.session_state:
-
-    st.markdown(
-        "## Ripeness Assessment"
-    )
-
-    fruit_result = st.session_state[
-        "ripeness_result"
-    ]
-
-    display_fruit_result(
-        fruit_result
-    )
+        if "ripeness_all" in st.session_state:
+            st.markdown("## Ripeness Assessment - all fruits")
+            for item in st.session_state["ripeness_all"]:
+                display_fruit_result(item)

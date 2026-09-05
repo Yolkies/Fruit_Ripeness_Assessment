@@ -1,0 +1,41 @@
+[
+  {
+    "index": 1,
+    "fruit_type": "orange",
+    "confidence": 0.2306,
+    "contour_area_px": 9798.5,
+    "bbox_xywh": [
+      94,
+      358,
+      107,
+      116
+    ],
+    "masked_crop": "fruit_01_orange.png"
+  },
+  {
+    "index": 2,
+    "fruit_type": "mango",
+    "confidence": 0.673,
+    "contour_area_px": 1457.0,
+    "bbox_xywh": [
+      189,
+      192,
+      54,
+      34
+    ],
+    "masked_crop": "fruit_02_mango.png"
+  },
+  {
+    "index": 3,
+    "fruit_type": "strawberry",
+    "confidence": 0.4921,
+    "contour_area_px": 946.5,
+    "bbox_xywh": [
+      203,
+      291,
+      38,
+      31
+    ],
+    "masked_crop": "fruit_03_strawberry.png"
+  }
+]

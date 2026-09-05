@@ -15,11 +15,18 @@ import preprocessing
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-MODEL_PATH = str(PROJECT_ROOT / "best4.pt")
+MODEL_PATH = "runs/segment/Fruit_Project/segmentation_run/weights/best.pt"
 
 CLASS_NAMES = ["apple", "banana", "mango", "orange", "strawberry", "tomato"]
 OUTPUT_DIR = "pipeline_output"          # masked crops for the ripeness stage go here
 CONF_THRESHOLD = 0.2              # detection confidence cut-off
+
+
+def resolve_path(path):
+    candidate = Path(path)
+    if candidate.is_absolute() or candidate.exists():
+        return str(candidate)
+    return str(PROJECT_ROOT / candidate)
 
 
 # ----------------------------------------------------------------------
@@ -51,7 +58,7 @@ def load_model():
     Load YOLO only once per model path instead of reloading it every time
     Streamlit reruns the script.
     """
-    return _load_model_cached(PARAMS.model_path)
+    return _load_model_cached(resolve_path(PARAMS.model_path))
 
 
 def segment(model, crops, crop_rects, orig_shape, conf=None, params=None):
@@ -262,7 +269,7 @@ def export_for_ripeness(img_bgr, detections, out_dir=None):
     """
     out_dir = PARAMS.output_dir if out_dir is None else out_dir
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session = os.path.join(out_dir, stamp)
+    session = os.path.join(resolve_path(out_dir), stamp)
     os.makedirs(session, exist_ok=True)
     manifest = []
     for i, d in enumerate(detections):

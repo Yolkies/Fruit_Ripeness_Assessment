@@ -13,6 +13,10 @@ Run inside the venv that has ultralytics + CUDA torch:
 """
 
 import os
+import queue
+import subprocess
+import sys
+import threading
 from dataclasses import dataclass
 
 import cv2
@@ -24,6 +28,7 @@ from PIL import Image, ImageTk
 import detection
 import preprocessing
 import ripeness
+import training
 from detection import (
     CLASS_NAMES,
     annotate,
@@ -88,6 +93,8 @@ class PipelineGUI:
         self.cap = None                  # active VideoCapture during live mode
         self.live = False                # live-video running flag
         self._rerun_job = None
+        self._train_queue = queue.Queue()
+        self._training = False
 
         # top bar
         bar = ttk.Frame(root, padding=8)
@@ -101,6 +108,11 @@ class PipelineGUI:
         self.stop_btn.pack(side="left", padx=4)
         ttk.Button(bar, text="Run Ripeness", command=self.run_ripeness).pack(side="left", padx=4)
         ttk.Button(bar, text="Export for Ripeness", command=self.export).pack(side="left", padx=4)
+        self.train_btn = ttk.Button(bar, text="Train Model", command=self.start_training)
+        self.train_btn.pack(side="left", padx=4)
+        self.include_negatives = tk.BooleanVar(value=training.PARAMS.include_negatives)
+        ttk.Checkbutton(bar, text="Include false images",
+                        variable=self.include_negatives).pack(side="left", padx=4)
         ttk.Checkbutton(bar, text="Show mask overlay", variable=self.show_mask,
                         command=self.refresh_segmented).pack(side="left", padx=12)
 
@@ -175,7 +187,6 @@ class PipelineGUI:
         ttk.Label(head, text="Parameters").pack(side="left")
         ttk.Checkbutton(head, text="Auto re-run", variable=self.auto_rerun,
                         command=self.on_param_change).pack(side="right")
-        ttk.Button(head, text="Re-run", command=self.rerun).pack(side="right", padx=4)
 
         book = ttk.Notebook(side)
         book.pack(fill="both", expand=True)
@@ -241,7 +252,7 @@ class PipelineGUI:
 
     def ensure_model(self):
         if self.model is None:
-            path = detection.PARAMS.model_path
+            path = detection.resolve_path(detection.PARAMS.model_path)
             if not os.path.exists(path):
                 messagebox.showerror("Model not found",
                     f"Could not find the model at:\n{path}\n"
@@ -493,6 +504,88 @@ class PipelineGUI:
             return
         self.seg_page = (self.seg_page + step) % (len(self.detections) + 1)
         self.refresh_segmented()
+
+    def start_training(self):
+        if self._training:
+            return
+        training.PARAMS.include_negatives = self.include_negatives.get()
+        run_name = training.run_name_for()
+        if not messagebox.askyesno(
+                "Train model",
+                "Build the dataset (split into train/val) and start YOLO training?\n\n"
+                f"Source: {training.PARAMS.source_dir}\n"
+                f"Dataset: {training.PARAMS.dataset_dir}\n"
+                f"Run: {training.PARAMS.runs_dir}/{run_name}\n"
+                f"False images: {'included' if training.PARAMS.include_negatives else 'excluded'}\n"
+                f"Epochs: {training.PARAMS.epochs}\n\n"
+                "This overwrites the dataset folder and the run folder "
+                "(including its current best.pt), and can take a long time."):
+            return
+
+        self._training = True
+        self.train_btn.configure(state="disabled", text="Training...")
+        self.log("\nStarting training pipeline.")
+
+        weights = (f"{training.PARAMS.runs_dir}/{run_name}/weights/best.pt")
+
+        def worker():
+            try:
+                command = [
+                    sys.executable, "-u", "training.py",
+                    "--negatives", "1" if training.PARAMS.include_negatives else "0",
+                    "--epochs", str(training.PARAMS.epochs),
+                    "--batch", str(training.PARAMS.batch),
+                    "--workers", str(training.PARAMS.workers),
+                    "--imgsz", str(training.PARAMS.imgsz),
+                    "--device", str(training.PARAMS.device),
+                ]
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(training.PROJECT_ROOT),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                for line in process.stdout:
+                    line = line.rstrip()
+                    if line:
+                        self._train_queue.put(line)
+                code = process.wait()
+                if code == 0:
+                    self._train_queue.put(("done", weights))
+                else:
+                    self._train_queue.put(("failed", f"training.py exited with code {code}"))
+            except Exception as exc:
+                self._train_queue.put(("failed", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(200, self._drain_training)
+
+    def _drain_training(self):
+        while True:
+            try:
+                item = self._train_queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(item, tuple):
+                status, detail = item
+                self._training = False
+                self.train_btn.configure(state="normal", text="Train Model")
+                if status == "done":
+                    self.log(f"Training complete: {detail}")
+                    if os.path.exists(detection.resolve_path(detail)):
+                        detection.PARAMS.model_path = detail
+                        self.editors["2.2"].refresh()
+                        self.model = None
+                        self.log("Detection now uses the newly trained weights.")
+                else:
+                    self.log(f"Training failed: {detail}")
+                return
+            self.log(str(item))
+        if self._training:
+            self.root.after(200, self._drain_training)
 
     def run_ripeness(self):
         """Module 2.3 on the current detections, using the 2.3 tab's thresholds."""
