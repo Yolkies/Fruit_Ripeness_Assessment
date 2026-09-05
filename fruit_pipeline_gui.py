@@ -38,7 +38,7 @@ from detection import (
     load_model,
     segment,
 )
-from gui import detection_panel, preprocessing_panel, ripeness_panel
+from gui import detection_panel, preprocessing_panel, ripeness_panel, ripeness_result
 from gui.param_widgets import Param, ParamEditor, ScrollableFrame
 
 
@@ -75,6 +75,9 @@ def build_crop_grid(crops, panel):
     return grid
 
 
+
+
+
 class PipelineGUI:
 
     def __init__(self, root):
@@ -88,6 +91,8 @@ class PipelineGUI:
         self.crop_page = 0
         self.seg_page = 0
         self.detections = []
+        self.ripeness_results = {}
+        self.ripeness_current_index = 0
         self.show_mask = tk.BooleanVar(value=False)
         self.auto_rerun = tk.BooleanVar(value=APP.auto_rerun)
         self.cap = None                  # active VideoCapture during live mode
@@ -381,7 +386,7 @@ class PipelineGUI:
 
         prep_result = preprocessing.preprocess(img_bgr)
 
-        # Fallback when preprocessing produced no object crops
+        # Fallback safety check if Otsu found no objects
         if not prep_result.crops:
             self.crops = [prep_result.bgr]
             self.crop_rects = [(0, 0, prep_result.bgr.shape[1], prep_result.bgr.shape[0])]
@@ -588,28 +593,124 @@ class PipelineGUI:
             self.root.after(200, self._drain_training)
 
     def run_ripeness(self):
-        """Module 2.3 on the current detections, using the 2.3 tab's thresholds."""
         if not self.detections:
             messagebox.showwarning("No detections", "Run the pipeline first.")
             return
-        self.log("\nRipeness assessment:")
-        for i, d in enumerate(self.detections, start=1):
-            fruit_type = CLASS_NAMES[d["cls"]]
-            crop, mask, _ = crop_detection_from_original(self.current_img, d)
+
+        self.ripeness_current_index = 0
+        self.show_ripeness_confirmation()
+
+
+    def prepare_ripeness_detection(self, index):
+
+        d = self.detections[index]
+
+        crop, mask, masked_crop = crop_detection_from_original(
+            self.current_img,
+            d
+        )
+
+        return {
+            "number": index + 1,
+            "yolo_fruit_type": CLASS_NAMES[d["cls"]],
+            "confidence": float(d["conf"]),
+            "crop": crop,
+            "fruit_mask": mask,
+            "masked_crop": masked_crop,
+        }
+
+    def show_ripeness_confirmation(self):
+
+        detected_fruit = self.prepare_ripeness_detection(self.ripeness_current_index)
+
+        predicted_fruit = detected_fruit["yolo_fruit_type"]
+        confidence = detected_fruit["confidence"]
+        crop = detected_fruit.get("crop")
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Confirm Fruit Type")
+        popup.geometry("520x620")
+        popup.transient(self.root)
+
+        # Keep image reference
+        popup.image_refs = []
+
+        ttk.Label(popup, text=f"Fruit {self.ripeness_current_index + 1} of {len(self.detections)}", font=("Arial", 14, "bold")).pack(pady=(20, 10))
+        ttk.Label(popup, text=f"YOLO Prediction: {predicted_fruit.title()}", font=("Arial", 12, "bold")).pack(pady=5)
+        ttk.Label(popup, text=f"Confidence: {confidence * 100:.1f}%").pack(pady=5)
+
+        # --------------------------------------------------------
+        # Show detected fruit image
+        # --------------------------------------------------------
+
+        if crop is not None:
+            ttk.Label(popup, text="Detected Fruit", font=("Arial", 11, "bold")).pack(pady=(12, 5))
+
+            crop_tk = ripeness_result.cv_to_tk_image(crop, max_width=260, max_height=220)
+
+            if crop_tk is not None:
+                popup.image_refs.append(crop_tk)
+                ttk.Label(popup, image=crop_tk).pack(pady=5)
+
+        ttk.Label(popup, text="Is the detected fruit type correct?").pack(pady=(15, 5))
+
+        fruit_options = ["Apple", "Banana", "Mango", "Orange", "Strawberry", "Tomato"]
+
+        selected_fruit_var = tk.StringVar(value=predicted_fruit.title())
+
+        ttk.Combobox(popup, textvariable=selected_fruit_var, values=fruit_options, state="readonly").pack(pady=10)
+
+        def continue_with_yolo():
+
             try:
-                result, _ = ripeness.assess_single_fruit(fruit_type, crop, mask)
-                normalised = ripeness.normalise_result(fruit_type, result)
+                result = ripeness.assess_detected_fruit(detected_fruit)
+
+                self.ripeness_results[self.ripeness_current_index] = result
+
+                popup.destroy()
+
+                ripeness_result.show_ripeness_result(self.root, result)
+
             except Exception as exc:
-                self.log(f"  Fruit {i}: {fruit_type} -> failed ({exc})")
-                continue
-            details = ", ".join(
-                f"{k.replace('_percentage', '')} {v:.1f}%"
-                for k, v in normalised["details"].items()
-                if isinstance(v, (int, float)))
-            self.log(f"  Fruit {i}: {fruit_type} -> index {normalised['ripeness_index']} "
-                     f"({normalised['ripeness_label']})")
-            if details:
-                self.log(f"           {details}")
+                messagebox.showerror("Ripeness Assessment Error", str(exc))
+
+        def analyse_selected():
+
+            selected_fruit = selected_fruit_var.get()
+
+            try:
+                result = ripeness.assess_detected_fruit(detected_fruit, selected_fruit_type=selected_fruit)
+
+                self.ripeness_results[self.ripeness_current_index] = result
+
+                popup.destroy()
+
+                ripeness_result.show_ripeness_result(self.root, result)
+
+            except Exception as exc:
+                messagebox.showerror("Ripeness Assessment Error", str(exc))
+
+        button_frame = ttk.Frame(popup)
+        button_frame.pack(fill="x", padx=20, pady=15)
+
+        ttk.Button(button_frame, text=f"Continue with {predicted_fruit.title()}", command=continue_with_yolo).pack(side="left", expand=True, fill="x", padx=5)
+        ttk.Button(button_frame, text="Analyse as Selected Fruit", command=analyse_selected).pack(side="left", expand=True, fill="x", padx=5)
+
+        nav_frame = ttk.Frame(popup)
+        nav_frame.pack(fill="x", padx=20, pady=(10, 5))
+
+        def previous_fruit():
+            popup.destroy()
+            self.ripeness_current_index = (self.ripeness_current_index - 1) % len(self.detections)
+            self.show_ripeness_confirmation()
+
+        def next_fruit():
+            popup.destroy()
+            self.ripeness_current_index = (self.ripeness_current_index + 1) % len(self.detections)
+            self.show_ripeness_confirmation()
+
+        ttk.Button(nav_frame, text="< Previous Fruit", command=previous_fruit).pack(side="left", padx=5)
+        ttk.Button(nav_frame, text="Next Fruit >", command=next_fruit).pack(side="right", padx=5)
 
     def export(self):
         if not self.detections:
