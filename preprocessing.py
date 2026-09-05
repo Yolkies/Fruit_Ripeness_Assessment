@@ -1,17 +1,15 @@
 """
 Stage 1 - Preprocessing module for the Fruit Ripeness Assessment system.
 
-The purpose of this stage is to remove nouses (lighting colour, sensor noise, glare, uneven brightness),
+The purpose of this stage is to remove nouses (lighting colour, sensor noise, uneven brightness),
 so that the later stages measure the fruit itself.
 
-Pipeline order (order matters: geometry -> colour of light -> noise -> local
-contrast -> glare -> package):
-    1.1 resize_normalise          normalise image size
-    1.2 white_balance             remove the colour cast of the lighting
-    1.3 denoise                   remove speckle/grain, keep edges sharp
-    1.4 apply_clahe               even out local brightness (conditional)
-    1.5 remove_specular_highlights  patch shiny glare spots
-    1.6 preprocess (packaging)    cache BGR + HSV + LAB for downstream stages
+Pipeline order (colour of light -> noise -> local contrast -> crop -> package):
+    1.1 white_balance             remove the colour cast of the lighting
+    1.2 denoise                   remove speckle/grain, keep edges sharp
+    1.3 apply_clahe               even out local brightness (conditional)
+    1.4 otsu_cropping             isolate each object as its own crop
+    1.5 preprocess (packaging)    cache BGR + HSV + LAB for downstream stages
 
 
 """
@@ -30,7 +28,6 @@ class PreprocessResult:
     bgr: np.ndarray                 # final cleaned image (BGR)
     hsv: np.ndarray                 # cached HSV conversion (used by segmentation/ripeness)
     lab: np.ndarray                 # cached LAB conversion
-    scale: float                    # resize factor, for mapping measurements back to source
     crops: list
     crop_rects: list
     steps: dict = field(default_factory=dict)   # intermediate images, for debugging/report figures
@@ -41,8 +38,7 @@ class PreprocessResult:
 # ----------------------------------------------------------------------
 @dataclass
 class PreprocessParams:
-    resize_enabled: bool = False
-    target_long_side: int = 800
+    enabled: bool = True
 
     white_balance_enabled: bool = False
     wb_saturation_threshold: float = 0.9
@@ -60,11 +56,6 @@ class PreprocessParams:
     clahe_tile_grid: int = 8
     clahe_contrast_gate: float = 55.0
 
-    glare_enabled: bool = False
-    glare_v_min: int = 240
-    glare_s_max: int = 90
-    glare_inpaint_radius: int = 3
-
     otsu_min_area: int = 2000
     otsu_pad_percent: float = 0.20
     otsu_blur_ksize: int = 11
@@ -75,23 +66,9 @@ class PreprocessParams:
 PARAMS = PreprocessParams()
 
 
-# ----------------------------------------------------------------------
-# 1.1  Resize / normalise size
-# ----------------------------------------------------------------------
-def resize_normalise(image, target_long_side=800):
-    """Scale the image so its longest side equals ``target_long_side`` px.
-
-    Fixing the size first means every later kernel (a 5 px blur, an 8x8 CLAHE
-    tile) behaves consistently across phone photos and webcam frames. The scale
-    factor is returned so pixel measurements can be mapped back to the original
-    resolution (Image Calibration requirement).
-    """
-    h, w = image.shape[:2]
-    scale = target_long_side / max(h, w)
-    # INTER_AREA is best for shrinking; INTER_CUBIC is best for enlarging.
-    interp = cv.INTER_AREA if scale < 1 else cv.INTER_CUBIC
-    resized = cv.resize(image, None, fx=scale, fy=scale, interpolation=interp)
-    return resized, scale
+def _odd(value, minimum=1):
+    value = max(minimum, int(value))
+    return value if value % 2 == 1 else value + 1
 
 
 # ----------------------------------------------------------------------
@@ -126,12 +103,12 @@ def white_balance(image, saturation_threshold=0.9,
 
     The saturation threshold still excludes vivid pixels when estimating gains.
     """
-    if hasattr(cv, "xphoto"):
+    try:
         wb = cv.xphoto.createGrayworldWB()
         wb.setSaturationThreshold(saturation_threshold)
         balanced = wb.balanceWhite(image)
-    else:
-        # opencv-contrib is not installed; equivalent grey-world in numpy.
+    except Exception:
+        # opencv-contrib unavailable or incompatible; equivalent grey-world in numpy.
         balanced = _grayworld(image, saturation_threshold)
 
     # Limit per-channel gain so the correction can't over-shift a colour cast.
@@ -159,7 +136,7 @@ def denoise(image, median_ksize=3, bilateral_d=2,
     Bilateral filter second: smooths flat regions but preserves edges (unlike a
     plain Gaussian blur, which would soften the outline the next stages rely on).
     """
-    speckle_free = cv.medianBlur(image, median_ksize)
+    speckle_free = cv.medianBlur(image, _odd(median_ksize, 1))
     smoothed = cv.bilateralFilter(
         speckle_free, bilateral_d, bilateral_sigma_colour, bilateral_sigma_space
     )
@@ -192,36 +169,6 @@ def apply_clahe(image, clip_limit=1.0, tile_grid_size=(8, 8), contrast_gate=55.0
 
     result = cv.cvtColor(cv.merge([L, A, B]), cv.COLOR_LAB2BGR)
     return result, was_applied
-
-
-# ----------------------------------------------------------------------
-# 1.5  Specular highlight (glare) suppression
-# ----------------------------------------------------------------------
-def remove_specular_highlights(image, v_min=240, s_max=90, inpaint_radius=3):
-    """Detect small bright glare spots (high brightness, low saturation) and
-    inpaint them using surrounding skin colour.
-
-    Glare carries no real colour information and can be mistaken for a blemish
-    or punch holes in the segmentation mask, so it is patched out. Returns
-    (result_image, glare_mask) so the mask can be shown in report figures.
-    """
-    hsv = cv.cvtColor(image, cv.COLOR_BGR2HSV)
-    _, S, V = cv.split(hsv)
-
-    glare_mask = ((V > v_min) & (S < s_max)).astype(np.uint8) * 255
-    # Dilate a little so the inpaint also covers the soft edge around each spot.
-    glare_mask = cv.dilate(glare_mask, np.ones((3, 3), np.uint8), iterations=2)
-
-    if cv.countNonZero(glare_mask) == 0:
-        return image, glare_mask   # nothing to do (e.g. soft, diffuse lighting)
-
-    result = cv.inpaint(image, glare_mask, inpaint_radius, cv.INPAINT_TELEA)
-    return result, glare_mask
-
-
-def _odd(value, minimum=1):
-    value = max(minimum, int(value))
-    return value if value % 2 == 1 else value + 1
 
 
 def otsu_cropping(image, min_area=2000, pad_percent=0.20,
@@ -269,61 +216,57 @@ def otsu_cropping(image, min_area=2000, pad_percent=0.20,
     return crops, rects
 
 # ----------------------------------------------------------------------
-# 1.6  Full pipeline (packages BGR + HSV + LAB for downstream stages)
+# 1.5  Full pipeline (packages BGR + HSV + LAB for downstream stages)
 # ----------------------------------------------------------------------
-def preprocess(image, target_long_side=None, keep_steps=False, params=None):
+def preprocess(image, keep_steps=False, params=None):
 
     p = params if params is not None else PARAMS
     steps = {}
 
+    if not p.enabled:
+        return PreprocessResult(
+            bgr=image.copy(),
+            hsv=cv.cvtColor(image, cv.COLOR_BGR2HSV),
+            lab=cv.cvtColor(image, cv.COLOR_BGR2LAB),
+            crops=[],
+            crop_rects=[],
+            steps=steps,
+        )
+
+    img = image.copy()
+
     # 1.1
-    long_side = p.target_long_side if target_long_side is None else target_long_side
-    img2, scale = resize_normalise(image, long_side)
-    if keep_steps:
-        steps["1.1_resized"] = img2.copy()
-
-    img = img2.copy() if p.resize_enabled else image.copy()
-
-    # 1.2
     if p.white_balance_enabled:
         img = white_balance(img, p.wb_saturation_threshold, p.wb_strength, p.wb_max_gain)
         if keep_steps:
-            steps["1.2_white_balanced"] = img.copy()
+            steps["1.1_white_balanced"] = img.copy()
 
-    # 1.3
+    # 1.2
     if p.denoise_enabled:
         img = denoise(img, _odd(p.median_ksize, 1), p.bilateral_d,
                       p.bilateral_sigma_colour, p.bilateral_sigma_space)
         if keep_steps:
-            steps["1.3_denoised"] = img.copy()
+            steps["1.2_denoised"] = img.copy()
 
-    # 1.4
+    # 1.3
     if p.clahe_enabled:
         img, clahe_applied = apply_clahe(
             img, p.clahe_clip_limit,
             (p.clahe_tile_grid, p.clahe_tile_grid),
             p.clahe_contrast_gate)
         if keep_steps:
-            steps["1.4_clahe"] = img.copy()
-            steps["1.4_clahe_applied"] = clahe_applied
+            steps["1.3_clahe"] = img.copy()
+            steps["1.3_clahe_applied"] = clahe_applied
 
-    # 1.5
-    if p.glare_enabled:
-        img, glare_mask = remove_specular_highlights(
-            img, p.glare_v_min, p.glare_s_max, p.glare_inpaint_radius)
-        if keep_steps:
-            steps["1.5_glare_mask"] = glare_mask
-            steps["1.5_deglared"] = img.copy()
-
-    #otsu
+    # 1.4
     crops, crop_rects = otsu_cropping(
-        img, p.otsu_min_area, p.otsu_pad_percent,
-        p.otsu_blur_ksize, p.otsu_morph_ksize, p.otsu_dilate_ksize)
+        img, p.otsu_min_area, p.otsu_pad_percent, p.otsu_blur_ksize,
+        p.otsu_morph_ksize, p.otsu_dilate_ksize)
     if keep_steps:
-        steps["1.6_crops"] = crops
-        steps["1.6_crop_rects"] = crop_rects
+        steps["1.4_crops"] = crops
+        steps["1.4_crop_rects"] = crop_rects
 
-    # 1.6  cache colour spaces once
+    # 1.5  cache colour spaces once
     final_bgr = img
     final_hsv = cv.cvtColor(final_bgr, cv.COLOR_BGR2HSV)
     final_lab = cv.cvtColor(final_bgr, cv.COLOR_BGR2LAB)
@@ -332,7 +275,6 @@ def preprocess(image, target_long_side=None, keep_steps=False, params=None):
         bgr=final_bgr,
         hsv=final_hsv,
         lab=final_lab,
-        scale=scale,
         crops=crops,
         crop_rects=crop_rects,
         steps=steps,
@@ -361,5 +303,5 @@ if __name__ == "__main__":
     cv.imwrite(dst_path, result.bgr)
 
     print(f"Input : {src.shape[1]}x{src.shape[0]}")
-    print(f"Output: {result.bgr.shape[1]}x{result.bgr.shape[0]} (scale {result.scale:.3f})")
+    print(f"Output: {result.bgr.shape[1]}x{result.bgr.shape[0]}")
     print(f"Saved final image to: {dst_path}")

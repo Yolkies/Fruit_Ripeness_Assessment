@@ -13,6 +13,7 @@ import preprocessing
 import ripeness
 import training
 from detection import annotate, contour_count, export_for_ripeness, segment
+from ripeness import assess_detected_fruit
 from params_spec import (
     detection_sections,
     preprocessing_sections,
@@ -513,23 +514,27 @@ def render_sidebar():
 # Pipeline (modules 2.1 -> 2.2)
 # ---------------------------------
 
-def build_crop_grid(crops, panel=380):
-    if not crops:
-        return None
-    cols = 1 if len(crops) == 1 else 2
-    rows = 1 if len(crops) <= 2 else 2
-    tw, th = panel // cols, panel // rows
-    grid = np.full((th * rows, tw * cols, 3), 238, dtype=np.uint8)
-    for i, crop in enumerate(crops[:cols * rows]):
-        h, w = crop.shape[:2]
-        s = min(tw / w, th / h)
-        rw, rh = max(1, int(w * s)), max(1, int(h * s))
-        small = cv2.resize(crop, (rw, rh))
-        r, col = divmod(i, cols)
-        y0 = r * th + (th - rh) // 2
-        x0 = col * tw + (tw - rw) // 2
-        grid[y0:y0 + rh, x0:x0 + rw] = small
-    return grid
+def crop_viewer(crops):
+    total = len(crops)
+    if total == 0:
+        st.info("No object crops.")
+        return
+    if st.session_state.get("crop_index", 1) > total:
+        st.session_state["crop_index"] = 1
+    index = st.session_state.setdefault("crop_index", 1)
+
+    back, forward = st.columns(2)
+    prev_clicked = back.button("Prev", disabled=total <= 1, use_container_width=True)
+    next_clicked = forward.button("Next", disabled=total <= 1, use_container_width=True)
+    if prev_clicked:
+        st.session_state["crop_index"] = total if index <= 1 else index - 1
+    elif next_clicked:
+        st.session_state["crop_index"] = 1 if index >= total else index + 1
+    index = st.session_state["crop_index"]
+
+    crop = crops[index - 1]
+    st.image(crop, channels="BGR", use_container_width=True)
+    st.caption(f"Object {index} of {total} - {crop.shape[1]}x{crop.shape[0]} px")
 
 
 def run_pipeline(image_bgr):
@@ -577,9 +582,7 @@ def display_stages(result, show_mask):
         st.image(image, channels="BGR", use_container_width=True)
     with col2:
         st.markdown(f"**2. Preprocessed** ({len(result['crops'])} object crops)")
-        grid = build_crop_grid(result["crops"])
-        if grid is not None:
-            st.image(grid, channels="BGR", use_container_width=True)
+        crop_viewer(result["crops"])
     with col3:
         st.markdown("**3. Segmented + Contours**")
         st.image(annotate(image, detections, show_mask=show_mask),

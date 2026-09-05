@@ -381,7 +381,7 @@ class PipelineGUI:
 
         prep_result = preprocessing.preprocess(img_bgr)
 
-        # Fallback safety check if Otsu found no objects
+        # Fallback when preprocessing produced no object crops
         if not prep_result.crops:
             self.crops = [prep_result.bgr]
             self.crop_rects = [(0, 0, prep_result.bgr.shape[1], prep_result.bgr.shape[0])]
