@@ -19,7 +19,7 @@ Project folder layout
 Fruit_Ripeness_Assessment/
 |
 |-- preprocessing.py
-|-- fruit_pipeline_gui.py
+|-- detection.py
 |-- best4.pt                         # example; use teammate's final model
 |
 `-- fruit_ripeness/apple_ripeness/
@@ -92,7 +92,7 @@ from ultralytics import YOLO
 
 import preprocessing
 
-from fruit_pipeline_gui import (
+from detection import (
     CLASS_NAMES,
     CONF_THRESHOLD,
     segment,

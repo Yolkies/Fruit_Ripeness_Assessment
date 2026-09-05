@@ -5,10 +5,8 @@ import cv2
 import numpy as np
 
 from Backend.camera import Camera
-from Backend.ripeness_service import (
-    detect_image,
-    assess_detected_fruit
-)
+from detection import detect_image
+from ripeness import assess_detected_fruit
 
 
 # ============================================================

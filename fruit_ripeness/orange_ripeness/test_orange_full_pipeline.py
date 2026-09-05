@@ -52,7 +52,7 @@ from ultralytics import YOLO
 
 import preprocessing
 
-from fruit_pipeline_gui import (
+from detection import (
     CLASS_NAMES,
     CONF_THRESHOLD,
     segment,

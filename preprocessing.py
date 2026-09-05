@@ -37,6 +37,45 @@ class PreprocessResult:
 
 
 # ----------------------------------------------------------------------
+# Tunable parameters (edited live by the GUI)
+# ----------------------------------------------------------------------
+@dataclass
+class PreprocessParams:
+    resize_enabled: bool = False
+    target_long_side: int = 800
+
+    white_balance_enabled: bool = False
+    wb_saturation_threshold: float = 0.9
+    wb_strength: float = 0.5
+    wb_max_gain: float = 1.6
+
+    denoise_enabled: bool = False
+    median_ksize: int = 3
+    bilateral_d: int = 2
+    bilateral_sigma_colour: int = 25
+    bilateral_sigma_space: int = 25
+
+    clahe_enabled: bool = True
+    clahe_clip_limit: float = 1.0
+    clahe_tile_grid: int = 8
+    clahe_contrast_gate: float = 55.0
+
+    glare_enabled: bool = False
+    glare_v_min: int = 240
+    glare_s_max: int = 90
+    glare_inpaint_radius: int = 3
+
+    otsu_min_area: int = 2000
+    otsu_pad_percent: float = 0.20
+    otsu_blur_ksize: int = 11
+    otsu_morph_ksize: int = 7
+    otsu_dilate_ksize: int = 5
+
+
+PARAMS = PreprocessParams()
+
+
+# ----------------------------------------------------------------------
 # 1.1  Resize / normalise size
 # ----------------------------------------------------------------------
 def resize_normalise(image, target_long_side=800):
@@ -58,6 +97,18 @@ def resize_normalise(image, target_long_side=800):
 # ----------------------------------------------------------------------
 # 1.2  White balance (saturation-thresholded grey-world)
 # ----------------------------------------------------------------------
+def _grayworld(image, saturation_threshold):
+    src = image.astype(np.float32)
+    high = src.max(axis=2)
+    low = src.min(axis=2)
+    saturation = np.where(high > 0, (high - low) / np.maximum(high, 1e-6), 0.0)
+    keep = saturation <= saturation_threshold
+    if not keep.any():
+        keep = np.ones_like(saturation, dtype=bool)
+    means = src[keep].reshape(-1, 3).mean(axis=0) + 1e-6
+    return np.clip(src * (means.mean() / means), 0, 255).astype(np.uint8)
+
+
 def white_balance(image, saturation_threshold=0.9,
                   strength=0.5, max_gain=1.6):
     """Neutralise the colour cast introduced by the lighting, gently.
@@ -75,9 +126,13 @@ def white_balance(image, saturation_threshold=0.9,
 
     The saturation threshold still excludes vivid pixels when estimating gains.
     """
-    wb = cv.xphoto.createGrayworldWB()
-    wb.setSaturationThreshold(saturation_threshold)
-    balanced = wb.balanceWhite(image)
+    if hasattr(cv, "xphoto"):
+        wb = cv.xphoto.createGrayworldWB()
+        wb.setSaturationThreshold(saturation_threshold)
+        balanced = wb.balanceWhite(image)
+    else:
+        # opencv-contrib is not installed; equivalent grey-world in numpy.
+        balanced = _grayworld(image, saturation_threshold)
 
     # Limit per-channel gain so the correction can't over-shift a colour cast.
     src = image.astype(np.float32)
@@ -164,21 +219,31 @@ def remove_specular_highlights(image, v_min=240, s_max=90, inpaint_radius=3):
     return result, glare_mask
 
 
-def otsu_cropping(image, min_area=2000, pad_percent=0.20):
+def _odd(value, minimum=1):
+    value = max(minimum, int(value))
+    return value if value % 2 == 1 else value + 1
+
+
+def otsu_cropping(image, min_area=2000, pad_percent=0.20,
+                  blur_ksize=11, morph_ksize=7, dilate_ksize=5):
     if image is None:
         print("Empty image provided to Otsu function.")
         return [], []
 
+    blur_ksize = _odd(blur_ksize, 1)
+    morph_ksize = max(1, int(morph_ksize))
+    dilate_ksize = max(1, int(dilate_ksize))
+
     hsv = cv.cvtColor(image, cv.COLOR_BGR2HSV)
     _, S, _ = cv.split(hsv)
-    blurred_sv = cv.GaussianBlur(S, (11, 11), 0)
+    blurred_sv = cv.GaussianBlur(S, (blur_ksize, blur_ksize), 0)
 
     _, otsu_mask = cv.threshold(blurred_sv, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
 
-    clean_kernel = np.ones((7, 7), np.uint8)
+    clean_kernel = np.ones((morph_ksize, morph_ksize), np.uint8)
     clean_mask = cv.morphologyEx(otsu_mask, cv.MORPH_CLOSE, clean_kernel, iterations=1)
     clean_mask = cv.morphologyEx(clean_mask, cv.MORPH_OPEN, clean_kernel, iterations=1)
-    extended_mask = cv.dilate(clean_mask, np.ones((5, 5), np.uint8), iterations=1)
+    extended_mask = cv.dilate(clean_mask, np.ones((dilate_ksize, dilate_ksize), np.uint8), iterations=1)
 
     contours, _ = cv.findContours(extended_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
@@ -206,39 +271,54 @@ def otsu_cropping(image, min_area=2000, pad_percent=0.20):
 # ----------------------------------------------------------------------
 # 1.6  Full pipeline (packages BGR + HSV + LAB for downstream stages)
 # ----------------------------------------------------------------------
-def preprocess(image, target_long_side=800, keep_steps=False):
- 
+def preprocess(image, target_long_side=None, keep_steps=False, params=None):
+
+    p = params if params is not None else PARAMS
     steps = {}
 
     # 1.1
-    img2, scale = resize_normalise(image, target_long_side)
+    long_side = p.target_long_side if target_long_side is None else target_long_side
+    img2, scale = resize_normalise(image, long_side)
     if keep_steps:
         steps["1.1_resized"] = img2.copy()
 
-    img = image.copy()
+    img = img2.copy() if p.resize_enabled else image.copy()
+
     # 1.2
-    # img = white_balance(img)
-    # if keep_steps:
-    #     steps["1.2_white_balanced"] = img.copy()
+    if p.white_balance_enabled:
+        img = white_balance(img, p.wb_saturation_threshold, p.wb_strength, p.wb_max_gain)
+        if keep_steps:
+            steps["1.2_white_balanced"] = img.copy()
 
     # 1.3
-    # img = denoise(img)
-    # if keep_steps:
-    #     steps["1.3_denoised"] = img.copy()
+    if p.denoise_enabled:
+        img = denoise(img, _odd(p.median_ksize, 1), p.bilateral_d,
+                      p.bilateral_sigma_colour, p.bilateral_sigma_space)
+        if keep_steps:
+            steps["1.3_denoised"] = img.copy()
 
     # 1.4
-    img, clahe_applied = apply_clahe(img)
-    if keep_steps:
-        steps["1.4_clahe"] = img.copy()
+    if p.clahe_enabled:
+        img, clahe_applied = apply_clahe(
+            img, p.clahe_clip_limit,
+            (p.clahe_tile_grid, p.clahe_tile_grid),
+            p.clahe_contrast_gate)
+        if keep_steps:
+            steps["1.4_clahe"] = img.copy()
+            steps["1.4_clahe_applied"] = clahe_applied
 
     # 1.5
-    # img, glare_mask = remove_specular_highlights(img)
-    # if keep_steps:
-    #     steps["1.5_glare_mask"] = glare_mask
-    #     steps["1.5_deglared"] = img.copy()
+    if p.glare_enabled:
+        img, glare_mask = remove_specular_highlights(
+            img, p.glare_v_min, p.glare_s_max, p.glare_inpaint_radius)
+        if keep_steps:
+            steps["1.5_glare_mask"] = glare_mask
+            steps["1.5_deglared"] = img.copy()
 
     #otsu
-    crops, crop_rects = otsu_cropping(img)
+    crops, crop_rects = otsu_cropping(
+        img, p.otsu_min_area, p.otsu_pad_percent,
+        p.otsu_blur_ksize, p.otsu_morph_ksize, p.otsu_dilate_ksize)
     if keep_steps:
         steps["1.6_crops"] = crops
         steps["1.6_crop_rects"] = crop_rects

@@ -1,96 +1,56 @@
 """
 Fruit Segmentation Pipeline GUI
 ================================
-Implements the front-end stages of the project flowchart:
+Tkinter front-end that drives the pipeline modules:
 
     Input (image / camera)
-        -> Preprocessing
-        -> Fruit Segmentation        (YOLO26-seg instance masks)
-        -> Contour Count             (classical cv2.findContours on each mask)
-        -> Fruit Identification      (class label per instance)
-        -> Output + hand-off         (masked fruit crops saved for the ripeness stage)
-
-The ripeness / defect / grading stage is intentionally left as a stub
-(`ripeness_stage`) for a teammate to implement. This GUI produces exactly what
-that stage needs: one masked crop per fruit plus a manifest describing each.
+        -> Module 2.1  preprocessing
+        -> Module 2.2  detection + instance segmentation + contour count
+        -> Output + hand-off (masked fruit crops for Module 2.3)
 
 Run inside the venv that has ultralytics + CUDA torch:
     python fruit_pipeline_gui.py
 """
 
 import os
-import json
-from datetime import datetime
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from PIL import Image, ImageTk
-from ultralytics import YOLO
 
+import detection
 import preprocessing
+import ripeness
+from detection import (
+    CLASS_NAMES,
+    annotate,
+    contour_count,
+    crop_detection_from_original,
+    export_for_ripeness,
+    load_model,
+    segment,
+)
+from gui import detection_panel, preprocessing_panel, ripeness_panel
+from gui.param_widgets import Param, ParamEditor, ScrollableFrame
 
 
-CLASS_NAMES = ["apple", "banana", "mango", "orange", "strawberry", "tomato"]
-OUTPUT_DIR = "pipeline_output"          # masked crops for the ripeness stage go here
-CONF_THRESHOLD = 0.2              # detection confidence cut-off
 DISPLAY_MAX = 480                       # max px for on-screen preview
 
-MODEL_PATH = r"best.pt"
+
+@dataclass
+class AppParams:
+    camera_index: int = 1
+    panel_size: int = 380
+    live_interval_ms: int = 10
+    crops_per_page: int = 4
+    zoom_pad_percent: float = 0.15
+    auto_rerun: bool = False
 
 
-
-def preprocess(img_bgr):
-    """
-    Flowchart: Preprocessing.
-    Delegates to the Stage-1 preprocessing module (white balance, edge-preserving
-    denoise, conditional CLAHE, glare removal, size normalisation). Returns the
-    cleaned BGR image; segmentation and all later steps run on this.
-    """
-    result = preprocessing.preprocess(img_bgr)     # PreprocessResult
-    return result.bgr
-
-
-def segment(model, crops, crop_rects, orig_shape, conf=CONF_THRESHOLD):
-    """
-    Flowchart: Fruit Segmentation.
-    Returns a list of per-instance dicts: binary mask, class id, confidence.
-    """
-    H, W = orig_shape[:2]
-    detections = []
-
-    for crop, (cx, cy, cw, ch) in zip(crops, crop_rects):
-        res = model.predict(crop, conf=conf, retina_masks=True, verbose=False)[0]
-        if res.masks is None:
-            continue
-
-        masks = res.masks.data.cpu().numpy()          # (N, ch, cw) in 0..1
-        cls_ids = res.boxes.cls.cpu().numpy().astype(int)
-        confs = res.boxes.conf.cpu().numpy()
-        for m, c, cf in zip(masks, cls_ids, confs):
-            mask_resized = cv2.resize(m, (cw, ch), interpolation=cv2.INTER_NEAREST)
-            mask_binary = (mask_resized > 0.5).astype("uint8") * 255
-
-            global_mask = np.zeros((H, W), dtype="uint8")
-            global_mask[cy:cy+ch, cx:cx+cw] = mask_binary
-
-            detections.append({"mask": global_mask, "cls": int(c), "conf": float(cf)})
-
-    return dedupe(detections)
-
-
-def dedupe(detections, overlap_thr=0.4):
-    kept = []
-    for d in sorted(detections, key=lambda x: -x["conf"]):
-        area = cv2.countNonZero(d["mask"])
-        if area == 0:
-            continue
-        if any(cv2.countNonZero(cv2.bitwise_and(d["mask"], k["mask"])) /
-               min(area, cv2.countNonZero(k["mask"])) > overlap_thr for k in kept):
-            continue
-        kept.append(d)
-    return sorted(kept, key=lambda d: cv2.boundingRect(d["mask"])[0])
+APP = AppParams()
 
 
 def build_crop_grid(crops, panel):
@@ -110,108 +70,12 @@ def build_crop_grid(crops, panel):
     return grid
 
 
-def contour_count(detections):
-    """
-    Flowchart: Contour Count.
-    Classical step: run cv2.findContours on EACH instance mask. Because the
-    model separates touching fruit into individual masks, each mask yields one
-    clean external contour -> an accurate count even when fruit touch (which
-    plain thresholding + contours would merge into one).
-    Adds 'contour' and 'area' to each detection; returns the total count.
-    """
-    count = 0
-    for d in detections:
-        cnts, _ = cv2.findContours(d["mask"], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts:
-            d["contour"] = None
-            d["area"] = 0
-            continue
-        largest = max(cnts, key=cv2.contourArea)
-        d["contour"] = largest
-        d["area"] = float(cv2.contourArea(largest))
-        count += 1
-    return count
-
-
-def annotate(img_bgr, detections, show_mask=False):
-    """Draw contours + class labels + index for the Segmented view.
-    If show_mask=True, also blend each instance's filled mask as a translucent
-    coloured overlay."""
-    out = img_bgr.copy()
-    palette = [(66, 66, 244), (48, 172, 220), (60, 76, 231), (80, 175, 76),
-               (0, 214, 255), (170, 66, 244)]
-    if show_mask:
-        overlay = out.copy()
-        for d in detections:
-            if d.get("contour") is None:
-                continue
-            color = palette[d["cls"] % len(palette)]
-            overlay[d["mask"] > 0] = color
-        out = cv2.addWeighted(overlay, 0.45, out, 0.55, 0)
-    for i, d in enumerate(detections):
-        if d.get("contour") is None:
-            continue
-        color = palette[d["cls"] % len(palette)]
-        cv2.drawContours(out, [d["contour"]], -1, color, 2)
-        x, y, w, h = cv2.boundingRect(d["contour"])
-        label = f"{i+1}:{CLASS_NAMES[d['cls']]} {d['conf']:.2f}"
-        cv2.putText(out, label, (x, max(0, y - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
-    return out
-
-
-def export_for_ripeness(img_bgr, detections, out_dir=OUTPUT_DIR):
-    """
-    Flowchart hand-off: Output -> (Ripeness / Defect / Grade).
-    For each fruit, save a MASKED crop (background removed, only fruit pixels)
-    plus a manifest. This is exactly what the HSV ripeness + defect stage
-    consumes. Returns the manifest list.
-    """
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session = os.path.join(out_dir, stamp)
-    os.makedirs(session, exist_ok=True)
-    manifest = []
-    for i, d in enumerate(detections):
-        if d.get("contour") is None:
-            continue
-        # isolate this fruit's pixels only (background -> black)
-        masked = cv2.bitwise_and(img_bgr, img_bgr, mask=d["mask"])
-        x, y, w, h = cv2.boundingRect(d["contour"])
-        crop = masked[y:y + h, x:x + w]
-        fname = f"fruit_{i+1:02d}_{CLASS_NAMES[d['cls']]}.png"
-        cv2.imwrite(os.path.join(session, fname), crop)
-        manifest.append({
-            "index": i + 1,
-            "fruit_type": CLASS_NAMES[d["cls"]],
-            "confidence": round(d["conf"], 4),
-            "contour_area_px": round(d["area"], 1),
-            "bbox_xywh": [int(x), int(y), int(w), int(h)],
-            "masked_crop": fname,
-        })
-    with open(os.path.join(session, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
-    return session, manifest
-
-
-def ripeness_stage(masked_crop_bgr, fruit_type):
-    """
-    ==================================================================
-    -
-
-    ==================================================================
-    """
-    raise NotImplementedError("Ripeness/defect/grading stage not implemented yet.")
-
-
-# ----------------------------------------------------------------------
-# GUI
-# ----------------------------------------------------------------------
 class PipelineGUI:
-    PANEL = 380
 
     def __init__(self, root):
         self.root = root
         root.title("Fruit Segmentation Pipeline")
+        self.PANEL = APP.panel_size
         self.model = None
         self.current_img = None          # last loaded BGR image (original)
         self.crops = []                  # per-object crops from preprocessing
@@ -220,8 +84,10 @@ class PipelineGUI:
         self.seg_page = 0
         self.detections = []
         self.show_mask = tk.BooleanVar(value=False)
+        self.auto_rerun = tk.BooleanVar(value=APP.auto_rerun)
         self.cap = None                  # active VideoCapture during live mode
         self.live = False                # live-video running flag
+        self._rerun_job = None
 
         # top bar
         bar = ttk.Frame(root, padding=8)
@@ -233,12 +99,19 @@ class PipelineGUI:
         self.live_btn.pack(side="left", padx=4)
         self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop_live, state="disabled")
         self.stop_btn.pack(side="left", padx=4)
+        ttk.Button(bar, text="Run Ripeness", command=self.run_ripeness).pack(side="left", padx=4)
         ttk.Button(bar, text="Export for Ripeness", command=self.export).pack(side="left", padx=4)
         ttk.Checkbutton(bar, text="Show mask overlay", variable=self.show_mask,
                         command=self.refresh_segmented).pack(side="left", padx=12)
 
+        body = ttk.Frame(root)
+        body.pack(fill="both", expand=True)
+
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True)
+
         # three equal panels: Original | Preprocessed | Segmented
-        panels = ttk.Frame(root, padding=8)
+        panels = ttk.Frame(left, padding=8)
         panels.pack(fill="both", expand=False)
         self.panel = {}
         # light-grey placeholder so empty panels aren't big black blocks
@@ -284,10 +157,83 @@ class PipelineGUI:
                 self.seg_label.pack(side="top")
 
         # results text
-        self.info = tk.Text(root, height=8)
-        self.info.pack(fill="x", padx=8, pady=6)
-        self.log(f"Model: {MODEL_PATH}")
+        self.info = tk.Text(left, height=8)
+        self.info.pack(fill="both", expand=True, padx=8, pady=6)
+
+        self.build_parameter_panels(body)
+
+        self.log(f"Model: {detection.PARAMS.model_path}")
         self.log("Load an image (or capture from camera), then Run Pipeline.")
+
+    def build_parameter_panels(self, parent):
+        """Module 2.1 / 2.2 / 2.3 controls, one tab per module."""
+        side = ttk.Frame(parent, padding=(0, 8, 8, 8))
+        side.pack(side="right", fill="both", expand=False)
+
+        head = ttk.Frame(side)
+        head.pack(fill="x", pady=(0, 4))
+        ttk.Label(head, text="Parameters").pack(side="left")
+        ttk.Checkbutton(head, text="Auto re-run", variable=self.auto_rerun,
+                        command=self.on_param_change).pack(side="right")
+        ttk.Button(head, text="Re-run", command=self.rerun).pack(side="right", padx=4)
+
+        book = ttk.Notebook(side)
+        book.pack(fill="both", expand=True)
+
+        self.editors = {}
+        for key, title, panel in [
+            ("2.1", "2.1 Pre-processing", preprocessing_panel),
+            ("2.2", "2.2 Detection", detection_panel),
+            ("2.3", "2.3 Ripeness", ripeness_panel),
+        ]:
+            tab = ttk.Frame(book, padding=4)
+            book.add(tab, text=title)
+            if key == "2.2":
+                self.editors[key] = panel.build(tab, self.on_param_change,
+                                                on_model_change=self.reload_model)
+            else:
+                self.editors[key] = panel.build(tab, self.on_param_change)
+
+        app_tab = ttk.Frame(book, padding=4)
+        book.add(app_tab, text="App")
+        area = ScrollableFrame(app_tab)
+        area.pack(fill="both", expand=True)
+        area.body.columnconfigure(0, weight=1)
+        app_editor = ParamEditor(lambda: None)
+        app_editor.section(area.body, "Application", [
+            Param("Camera index", APP, "camera_index", kind="int", lo=0, hi=8),
+            Param("Live interval (ms)", APP, "live_interval_ms", kind="int", lo=1, hi=1000),
+            Param("Crops per page", APP, "crops_per_page", kind="int", lo=1, hi=4),
+            Param("Single-fruit zoom pad", APP, "zoom_pad_percent",
+                  kind="float", lo=0.0, hi=1.0),
+        ], 0)
+        self.editors["app"] = app_editor
+
+    def on_param_change(self):
+        """A parameter moved: redraw now, and optionally re-run the pipeline."""
+        if self.current_img is None:
+            return
+        self.refresh_segmented()
+        if not self.auto_rerun.get() or self.live:
+            return
+        if self._rerun_job is not None:
+            self.root.after_cancel(self._rerun_job)
+        self._rerun_job = self.root.after(400, self.rerun)
+
+    def rerun(self):
+        self._rerun_job = None
+        if self.current_img is None or self.live:
+            return
+        if not self.ensure_model():
+            return
+        try:
+            self.process_frame(self.current_img, log_result=False)
+        except Exception as exc:
+            self.log(f"Pipeline failed with the current parameters: {exc}")
+
+    def reload_model(self):
+        self.model = None
+        self.log(f"Model path set to: {detection.PARAMS.model_path}")
 
     def log(self, msg):
         self.info.insert("end", msg + "\n")
@@ -295,13 +241,14 @@ class PipelineGUI:
 
     def ensure_model(self):
         if self.model is None:
-            if not os.path.exists(MODEL_PATH):
+            path = detection.PARAMS.model_path
+            if not os.path.exists(path):
                 messagebox.showerror("Model not found",
-                    f"Could not find the model at:\n{MODEL_PATH}\n"
-                    "Edit MODEL_PATH at the top of the script.")
+                    f"Could not find the model at:\n{path}\n"
+                    "Set the weights path on the 2.2 Detection tab.")
                 return False
             self.log("Loading model...")
-            self.model = YOLO(MODEL_PATH)
+            self.model = load_model()
             self.log("Model loaded.")
         return True
 
@@ -333,9 +280,10 @@ class PipelineGUI:
             self.prev_btn.configure(state="disabled")
             self.next_btn.configure(state="disabled")
             return
-        pages = (len(self.crops) + 3) // 4
+        per_page = max(1, APP.crops_per_page)
+        pages = (len(self.crops) + per_page - 1) // per_page
         self.crop_page = max(0, min(self.crop_page, pages - 1))
-        page = self.crops[self.crop_page * 4:self.crop_page * 4 + 4]
+        page = self.crops[self.crop_page * per_page:(self.crop_page + 1) * per_page]
         self.show("pre", build_crop_grid(page, self.PANEL))
         self.crop_label.configure(
             text=f"{len(self.crops)} object(s)  |  page {self.crop_page + 1}/{pages}")
@@ -346,7 +294,8 @@ class PipelineGUI:
     def crop_page_step(self, step):
         if not self.crops:
             return
-        pages = (len(self.crops) + 3) // 4
+        per_page = max(1, APP.crops_per_page)
+        pages = (len(self.crops) + per_page - 1) // per_page
         self.crop_page = (self.crop_page + step) % pages
         self.show_crops()
 
@@ -366,7 +315,7 @@ class PipelineGUI:
 
     def capture_camera(self):
         """Live preview inside the app (no cv2.imshow window). SPACE captures."""
-        cap = cv2.VideoCapture(1)
+        cap = cv2.VideoCapture(APP.camera_index)
         if not cap.isOpened():
             messagebox.showerror("Camera", "Could not open camera.")
             return
@@ -418,10 +367,9 @@ class PipelineGUI:
         Returns (count, per_class). Shared by single-run and live video.
         """
         self.current_img = img_bgr
-        
-        # 1. Run Preprocessing (returns PreprocessResult with Otsu crop info)
-        prep_result = preprocessing.preprocess(img_bgr) 
-        
+
+        prep_result = preprocessing.preprocess(img_bgr)
+
         # Fallback safety check if Otsu found no objects
         if not prep_result.crops:
             self.crops = [prep_result.bgr]
@@ -434,12 +382,12 @@ class PipelineGUI:
         self.seg_page = 0
 
         self.detections = segment(self.model, self.crops, self.crop_rects, img_bgr.shape)
-        
+
         count = contour_count(self.detections)
 
         self.show("orig", self.current_img)
         self.show_crops()
-        self.refresh_segmented() 
+        self.refresh_segmented()
 
         per_class = {}
         for d in self.detections:
@@ -454,7 +402,7 @@ class PipelineGUI:
                     fruit_name = CLASS_NAMES[d["cls"]]
                     confidence = d["conf"]
                     self.log(f"  Fruit {i+1}: {fruit_name} (Confidence: {confidence:.2f})")
-                
+
             else:
                 self.log("No fruit detected (image may be a negative/background).")
         return count, per_class
@@ -465,14 +413,17 @@ class PipelineGUI:
             return
         if not self.ensure_model():
             return
-        self.process_frame(self.current_img)
+        try:
+            self.process_frame(self.current_img)
+        except Exception as exc:
+            self.log(f"Pipeline failed with the current parameters: {exc}")
 
     def start_live(self):
         if self.live:
             return
         if not self.ensure_model():
             return
-        self.cap = cv2.VideoCapture(1)
+        self.cap = cv2.VideoCapture(APP.camera_index)
         if not self.cap.isOpened():
             messagebox.showerror("Camera", "Could not open camera.")
             self.cap = None
@@ -494,7 +445,7 @@ class PipelineGUI:
             self.panel["seg"].master.master.configure(
                 text=f"3. Segmented + Contours  (count: {count} | {summary})")
         # schedule next frame; ~10ms yields to the UI, real rate limited by pipeline speed
-        self.root.after(10, self._live_loop)
+        self.root.after(max(1, APP.live_interval_ms), self._live_loop)
 
     def stop_live(self):
         self.live = False
@@ -526,7 +477,7 @@ class PipelineGUI:
         if self.seg_page > 0:
             x, y, w, h = cv2.boundingRect(shown[0]["mask"])
             if w and h:
-                pad = int(max(w, h) * 0.15)
+                pad = int(max(w, h) * APP.zoom_pad_percent)
                 H, W = annotated.shape[:2]
                 annotated = annotated[max(0, y - pad):min(H, y + h + pad),
                                       max(0, x - pad):min(W, x + w + pad)]
@@ -542,6 +493,30 @@ class PipelineGUI:
             return
         self.seg_page = (self.seg_page + step) % (len(self.detections) + 1)
         self.refresh_segmented()
+
+    def run_ripeness(self):
+        """Module 2.3 on the current detections, using the 2.3 tab's thresholds."""
+        if not self.detections:
+            messagebox.showwarning("No detections", "Run the pipeline first.")
+            return
+        self.log("\nRipeness assessment:")
+        for i, d in enumerate(self.detections, start=1):
+            fruit_type = CLASS_NAMES[d["cls"]]
+            crop, mask, _ = crop_detection_from_original(self.current_img, d)
+            try:
+                result, _ = ripeness.assess_single_fruit(fruit_type, crop, mask)
+                normalised = ripeness.normalise_result(fruit_type, result)
+            except Exception as exc:
+                self.log(f"  Fruit {i}: {fruit_type} -> failed ({exc})")
+                continue
+            details = ", ".join(
+                f"{k.replace('_percentage', '')} {v:.1f}%"
+                for k, v in normalised["details"].items()
+                if isinstance(v, (int, float)))
+            self.log(f"  Fruit {i}: {fruit_type} -> index {normalised['ripeness_index']} "
+                     f"({normalised['ripeness_label']})")
+            if details:
+                self.log(f"           {details}")
 
     def export(self):
         if not self.detections:
