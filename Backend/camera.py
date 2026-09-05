@@ -11,7 +11,8 @@ class Camera:
         if not ret:
             return None
 
-        frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+        # Keep BGR for preprocessing / ripeness analysis
+        # frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
 
         return frame
 
