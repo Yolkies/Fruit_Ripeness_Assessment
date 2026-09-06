@@ -102,29 +102,13 @@ def preprocessing_sections():
         ]),
         ("1.1 White balance", [
             Param("Enabled", p, "white_balance_enabled", kind="bool"),
-            Param("Saturation thr.", p, "wb_saturation_threshold", kind="float", lo=0.0, hi=1.0),
             Param("Strength", p, "wb_strength", kind="float", lo=0.0, hi=1.0),
-            Param("Max gain", p, "wb_max_gain", kind="float", lo=1.0, hi=4.0),
         ]),
-        ("1.2 Denoise", [
-            Param("Enabled", p, "denoise_enabled", kind="bool"),
-            Param("Median ksize (odd)", p, "median_ksize", kind="int", lo=1, hi=15),
-            Param("Bilateral d", p, "bilateral_d", kind="int", lo=1, hi=15),
-            Param("Sigma colour", p, "bilateral_sigma_colour", kind="int", lo=1, hi=200),
-            Param("Sigma space", p, "bilateral_sigma_space", kind="int", lo=1, hi=200),
-        ]),
-        ("1.3 CLAHE", [
+        ("1.2 CLAHE", [
             Param("Enabled", p, "clahe_enabled", kind="bool"),
             Param("Clip limit", p, "clahe_clip_limit", kind="float", lo=0.1, hi=10.0),
             Param("Tile grid", p, "clahe_tile_grid", kind="int", lo=1, hi=32),
             Param("Contrast gate", p, "clahe_contrast_gate", kind="float", lo=0.0, hi=128.0),
-        ]),
-        ("1.4 Otsu cropping", [
-            Param("Min area (px)", p, "otsu_min_area", kind="int", lo=0, hi=50000),
-            Param("Pad percent", p, "otsu_pad_percent", kind="float", lo=0.0, hi=1.0),
-            Param("Blur ksize (odd)", p, "otsu_blur_ksize", kind="int", lo=1, hi=51),
-            Param("Morph ksize", p, "otsu_morph_ksize", kind="int", lo=1, hi=51),
-            Param("Dilate ksize", p, "otsu_dilate_ksize", kind="int", lo=1, hi=51),
         ]),
     ]
 

@@ -524,41 +524,11 @@ def render_sidebar():
 # Pipeline (modules 2.1 -> 2.2)
 # ---------------------------------
 
-def crop_viewer(crops):
-    total = len(crops)
-    if total == 0:
-        st.info("No object crops.")
-        return
-    if st.session_state.get("crop_index", 1) > total:
-        st.session_state["crop_index"] = 1
-    index = st.session_state.setdefault("crop_index", 1)
-
-    back, forward = st.columns(2)
-    prev_clicked = back.button("Prev", disabled=total <= 1, use_container_width=True)
-    next_clicked = forward.button("Next", disabled=total <= 1, use_container_width=True)
-    if prev_clicked:
-        st.session_state["crop_index"] = total if index <= 1 else index - 1
-    elif next_clicked:
-        st.session_state["crop_index"] = 1 if index >= total else index + 1
-    index = st.session_state["crop_index"]
-
-    crop = crops[index - 1]
-    st.image(crop, channels="BGR", use_container_width=True)
-    st.caption(f"Object {index} of {total} - {crop.shape[1]}x{crop.shape[0]} px")
-
-
 def run_pipeline(image_bgr):
     prep = preprocessing.preprocess(image_bgr)
 
-    if not prep.crops:
-        crops = [prep.bgr]
-        crop_rects = [(0, 0, prep.bgr.shape[1], prep.bgr.shape[0])]
-    else:
-        crops = prep.crops
-        crop_rects = prep.crop_rects
-
     model = detection.load_model()
-    detections = segment(model, crops, crop_rects, image_bgr.shape)
+    detections = segment(model, prep.bgr, image_bgr.shape)
     count = contour_count(detections)
 
     prepared = []
@@ -575,7 +545,7 @@ def run_pipeline(image_bgr):
 
     return {
         "image": image_bgr,
-        "crops": crops,
+        "preprocessed": prep.bgr,
         "detections": detections,
         "prepared": prepared,
         "count": count,
@@ -591,11 +561,11 @@ def display_stages(result, show_mask):
         st.markdown("**1. Original**")
         st.image(image, channels="BGR", use_container_width=True)
     with col2:
-        st.markdown(f"**2. Preprocessed** ({len(result['crops'])} object crops)")
-        crop_viewer(result["crops"])
+        st.markdown("**2. Preprocessed**")
+        st.image(result["preprocessed"], channels="BGR", use_container_width=True)
     with col3:
         st.markdown("**3. Segmented + Contours**")
-        st.image(annotate(image, detections, show_mask=show_mask),
+        st.image(annotate(result["preprocessed"], detections, show_mask=show_mask),
                  channels="BGR", use_container_width=True)
 
     st.info(f"Contour count (fruits detected): {result['count']}")
@@ -626,7 +596,7 @@ def per_instance_view(result, show_mask):
         return
     index = labels.index(choice) - 1
     d = detections[index]
-    annotated = annotate(result["image"], [d], show_mask=show_mask)
+    annotated = annotate(result["preprocessed"], [d], show_mask=show_mask)
     x, y, w, h = cv2.boundingRect(d["mask"])
     if w and h:
         pad = int(max(w, h) * 0.15)
@@ -747,7 +717,9 @@ def _blemish_pdf_button(result, items):
 
 def blemish_section(result):
     """Run module 2.4 over every detection of the current pipeline result."""
-    if not result.get("detections"):
+    # result is None until "Run pipeline" has been pressed, and again right
+    # after a new upload clears the cached result.
+    if not result or not result.get("detections"):
         return
 
     st.markdown("## Blemish / Defect Detection")

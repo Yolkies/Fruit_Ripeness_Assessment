@@ -8,7 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 
 import cv2
-import numpy as np
 from ultralytics import YOLO
 
 import preprocessing
@@ -61,9 +60,11 @@ def load_model():
     return _load_model_cached(resolve_path(PARAMS.model_path))
 
 
-def segment(model, crops, crop_rects, orig_shape, conf=None, params=None):
+def segment(model, image, orig_shape, conf=None, params=None):
     """
     Flowchart: Fruit Segmentation.
+    Runs one inference over the whole (pre-processed) frame. Masks are resized
+    to the original frame size, so they index straight into the original image.
     Returns a list of per-instance dicts: binary mask, class id, confidence.
     """
     p = params if params is not None else PARAMS
@@ -72,22 +73,17 @@ def segment(model, crops, crop_rects, orig_shape, conf=None, params=None):
     H, W = orig_shape[:2]
     detections = []
 
-    for crop, (cx, cy, cw, ch) in zip(crops, crop_rects):
-        res = model.predict(crop, conf=conf, retina_masks=p.retina_masks, verbose=False)[0]
-        if res.masks is None:
-            continue
+    res = model.predict(image, conf=conf, retina_masks=p.retina_masks, verbose=False)[0]
+    if res.masks is None:
+        return []
 
-        masks = res.masks.data.cpu().numpy()          # (N, ch, cw) in 0..1
-        cls_ids = res.boxes.cls.cpu().numpy().astype(int)
-        confs = res.boxes.conf.cpu().numpy()
-        for m, c, cf in zip(masks, cls_ids, confs):
-            mask_resized = cv2.resize(m, (cw, ch), interpolation=cv2.INTER_NEAREST)
-            mask_binary = (mask_resized > p.mask_binary_threshold).astype("uint8") * 255
-
-            global_mask = np.zeros((H, W), dtype="uint8")
-            global_mask[cy:cy+ch, cx:cx+cw] = mask_binary
-
-            detections.append({"mask": global_mask, "cls": int(c), "conf": float(cf)})
+    masks = res.masks.data.cpu().numpy()              # (N, h, w) in 0..1
+    cls_ids = res.boxes.cls.cpu().numpy().astype(int)
+    confs = res.boxes.conf.cpu().numpy()
+    for m, c, cf in zip(masks, cls_ids, confs):
+        mask_resized = cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
+        mask_binary = (mask_resized > p.mask_binary_threshold).astype("uint8") * 255
+        detections.append({"mask": mask_binary, "cls": int(c), "conf": float(cf)})
 
     return dedupe(detections, p.dedupe_overlap_threshold)
 
@@ -169,17 +165,9 @@ def run_yolo_segmentation(image_bgr, model=None):
 
     prep = preprocessing.preprocess(image_bgr)
 
-    if not prep.crops:
-        crops = [prep.bgr]
-        crop_rects = [(0, 0, prep.bgr.shape[1], prep.bgr.shape[0])]
-    else:
-        crops = prep.crops
-        crop_rects = prep.crop_rects
-
     detections = segment(
         model,
-        crops,
-        crop_rects,
+        prep.bgr,
         image_bgr.shape,
     )
 

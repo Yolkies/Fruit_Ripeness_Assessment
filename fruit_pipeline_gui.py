@@ -88,9 +88,7 @@ class PipelineGUI:
         self.PANEL = APP.panel_size
         self.model = None
         self.current_img = None          # last loaded BGR image (original)
-        self.crops = []                  # per-object crops from preprocessing
-        self.crop_rects = []             # (x, y, w, h) of each crop in the original image
-        self.crop_page = 0
+        self.pre_img = None              # pre-processed frame handed to YOLO
         self.seg_page = 0
         self.detections = []
         self.ripeness_results = {}
@@ -158,12 +156,7 @@ class PipelineGUI:
             if key == "pre":
                 nav = ttk.Frame(frame)
                 nav.pack(fill="x", pady=(4, 0))
-                self.prev_btn = ttk.Button(nav, text="<", width=3, state="disabled",
-                                           command=lambda: self.crop_page_step(-1))
-                self.prev_btn.pack(side="left")
-                self.next_btn = ttk.Button(nav, text=">", width=3, state="disabled",
-                                           command=lambda: self.crop_page_step(1))
-                self.next_btn.pack(side="right")
+                # caption only; the blemish step writes its summary here too
                 self.crop_label = ttk.Label(nav, text="")
                 self.crop_label.pack(side="top")
 
@@ -296,31 +289,15 @@ class PipelineGUI:
         self.panel[key].configure(image=self._placeholder)
         self.panel[key].image = self._placeholder
 
-    def show_crops(self):
-        if not self.crops:
+    def show_preprocessed(self):
+        """Panel 2: the whole pre-processed frame, as in the Streamlit app."""
+        if self.pre_img is None:
             self.clear_panel("pre")
             self.crop_label.configure(text="")
-            self.prev_btn.configure(state="disabled")
-            self.next_btn.configure(state="disabled")
             return
-        per_page = max(1, APP.crops_per_page)
-        pages = (len(self.crops) + per_page - 1) // per_page
-        self.crop_page = max(0, min(self.crop_page, pages - 1))
-        page = self.crops[self.crop_page * per_page:(self.crop_page + 1) * per_page]
-        self.show("pre", build_crop_grid(page, self.PANEL))
-        self.crop_label.configure(
-            text=f"{len(self.crops)} object(s)  |  page {self.crop_page + 1}/{pages}")
-        state = "normal" if pages > 1 else "disabled"
-        self.prev_btn.configure(state=state)
-        self.next_btn.configure(state=state)
-
-    def crop_page_step(self, step):
-        if not self.crops:
-            return
-        per_page = max(1, APP.crops_per_page)
-        pages = (len(self.crops) + per_page - 1) // per_page
-        self.crop_page = (self.crop_page + step) % pages
-        self.show_crops()
+        self.show("pre", self.pre_img)
+        h, w = self.pre_img.shape[:2]
+        self.crop_label.configure(text=f"pre-processed  |  {w}x{h} px")
 
     def load_image(self):
         path = filedialog.askopenfilename(
@@ -328,11 +305,10 @@ class PipelineGUI:
         if not path:
             return
         self.current_img = cv2.imread(path)
-        self.crops = []
-        self.crop_rects = []
+        self.pre_img = None
         self.detections = []
         self.show("orig", self.current_img)
-        self.show_crops()
+        self.show_preprocessed()
         self.clear_panel("seg")
         self.log(f"Loaded: {os.path.basename(path)}")
 
@@ -365,11 +341,10 @@ class PipelineGUI:
         def capture(_=None):
             if state["frame"] is not None:
                 self.current_img = state["frame"].copy()
-                self.crops = []
-                self.crop_rects = []
+                self.pre_img = None
                 self.detections = []
                 self.show("orig", self.current_img)
-                self.show_crops()
+                self.show_preprocessed()
                 self.clear_panel("seg")
                 self.log("Captured frame from camera.")
             close()
@@ -392,24 +367,16 @@ class PipelineGUI:
         self.current_img = img_bgr
 
         prep_result = preprocessing.preprocess(img_bgr)
+        self.pre_img = prep_result.bgr
 
-        # Fallback safety check if Otsu found no objects
-        if not prep_result.crops:
-            self.crops = [prep_result.bgr]
-            self.crop_rects = [(0, 0, prep_result.bgr.shape[1], prep_result.bgr.shape[0])]
-        else:
-            self.crops = prep_result.crops
-            self.crop_rects = prep_result.crop_rects
-
-        self.crop_page = 0
         self.seg_page = 0
 
-        self.detections = segment(self.model, self.crops, self.crop_rects, img_bgr.shape)
+        self.detections = segment(self.model, self.pre_img, img_bgr.shape)
 
         count = contour_count(self.detections)
 
         self.show("orig", self.current_img)
-        self.show_crops()
+        self.show_preprocessed()
         self.refresh_segmented()
 
         per_class = {}
@@ -482,13 +449,15 @@ class PipelineGUI:
 
     def refresh_segmented(self):
         """Redraw the Segmented panel, honouring the mask-overlay toggle.
-        Drawn on the ORIGINAL image, since detection ran on it (matching coords).
+        Drawn on the PRE-PROCESSED frame (the one YOLO ran on), matching the
+        Streamlit app; falls back to the original before the pipeline has run.
         When there are no detections, still show the current frame (no contours)
         so live video keeps updating instead of appearing frozen."""
         if self.current_img is None:
             return
+        base = self.pre_img if self.pre_img is not None else self.current_img
         if not self.detections:
-            self.show("seg", self.current_img)   # no fruit -> show plain frame
+            self.show("seg", base)               # no fruit -> show plain frame
             self.seg_label.configure(text="")
             self.seg_prev_btn.configure(state="disabled")
             self.seg_next_btn.configure(state="disabled")
@@ -496,7 +465,7 @@ class PipelineGUI:
         pages = len(self.detections) + 1
         self.seg_page = max(0, min(self.seg_page, pages - 1))
         shown = self.detections if self.seg_page == 0 else [self.detections[self.seg_page - 1]]
-        annotated = annotate(self.current_img, shown, show_mask=self.show_mask.get())
+        annotated = annotate(base, shown, show_mask=self.show_mask.get())
         if self.seg_page > 0:
             x, y, w, h = cv2.boundingRect(shown[0]["mask"])
             if w and h:
