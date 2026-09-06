@@ -808,19 +808,14 @@ def training_section():
                           key="train_negatives")
     training.PARAMS.include_negatives = include
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     with col1:
         training.PARAMS.epochs = st.number_input("Epochs", 1, 1000,
                                                  training.PARAMS.epochs, key="train_epochs")
     with col2:
-        training.PARAMS.patience = st.number_input(
-            "Patience", 0, 1000, training.PARAMS.patience, key="train_patience",
-            help="Stop early after this many epochs with no improvement. "
-                 "0 disables early stopping.")
-    with col3:
         training.PARAMS.batch = st.number_input("Batch", 1, 64,
                                                 training.PARAMS.batch, key="train_batch")
-    with col4:
+    with col3:
         training.PARAMS.workers = st.number_input("Workers", 0, 16,
                                                   training.PARAMS.workers, key="train_workers")
 
@@ -838,7 +833,6 @@ def training_section():
         sys.executable, "-u", "training.py",
         "--negatives", "1" if include else "0",
         "--epochs", str(training.PARAMS.epochs),
-        "--patience", str(training.PARAMS.patience),
         "--batch", str(training.PARAMS.batch),
         "--workers", str(training.PARAMS.workers),
         "--imgsz", str(training.PARAMS.imgsz),
