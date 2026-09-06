@@ -1,10 +1,10 @@
-task: segment
+﻿task: segment
 mode: train
 model: yolo26n-seg.pt
 data: E:\Fruit_Ripeness_Assessment\dataset\data.yaml
-epochs: 50
+epochs: 200
 time: null
-patience: 100
+patience: 50
 batch: 8
 imgsz: 640
 save: true

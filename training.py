@@ -21,7 +21,8 @@ class TrainParams:
     seed: int = 0
     include_negatives: bool = True
     base_model: str = "yolo26n-seg.pt"
-    epochs: int = 50
+    epochs: int = 200
+    patience: int = 50
     imgsz: int = 640
     batch: int = 8
     device: str = "0"
@@ -157,12 +158,14 @@ def train(data_yaml, params=None, log=None):
 
     p = params if params is not None else PARAMS
     name = run_name_for(p)
-    _log(f"Training {p.base_model} for {p.epochs} epochs into {p.runs_dir}/{name}", log)
+    _log(f"Training {p.base_model} for {p.epochs} epochs "
+         f"(patience {p.patience}) into {p.runs_dir}/{name}", log)
 
     model = YOLO(p.base_model)
     results = model.train(
         data=str(data_yaml),
         epochs=p.epochs,
+        patience=p.patience,
         imgsz=p.imgsz,
         batch=p.batch,
         device=p.device,
@@ -194,6 +197,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--negatives", type=int, choices=(0, 1))
     parser.add_argument("--epochs", type=int)
+    parser.add_argument("--patience", type=int)
     parser.add_argument("--batch", type=int)
     parser.add_argument("--workers", type=int)
     parser.add_argument("--imgsz", type=int)
@@ -202,7 +206,7 @@ def main(argv=None):
 
     if args.negatives is not None:
         PARAMS.include_negatives = bool(args.negatives)
-    for field in ("epochs", "batch", "workers", "imgsz", "device"):
+    for field in ("epochs", "patience", "batch", "workers", "imgsz", "device"):
         value = getattr(args, field)
         if value is not None:
             setattr(PARAMS, field, value)
