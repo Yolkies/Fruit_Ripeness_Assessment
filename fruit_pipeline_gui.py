@@ -529,7 +529,8 @@ class PipelineGUI:
                 f"Dataset: {training.PARAMS.dataset_dir}\n"
                 f"Run: {training.PARAMS.runs_dir}/{run_name}\n"
                 f"False images: {'included' if training.PARAMS.include_negatives else 'excluded'}\n"
-                f"Epochs: {training.PARAMS.epochs}\n\n"
+                f"Epochs: {training.PARAMS.epochs}\n"
+                f"Patience: {training.PARAMS.patience}\n\n"
                 "This overwrites the dataset folder and the run folder "
                 "(including its current best.pt), and can take a long time."):
             return
@@ -546,6 +547,7 @@ class PipelineGUI:
                     sys.executable, "-u", "training.py",
                     "--negatives", "1" if training.PARAMS.include_negatives else "0",
                     "--epochs", str(training.PARAMS.epochs),
+                    "--patience", str(training.PARAMS.patience),
                     "--batch", str(training.PARAMS.batch),
                     "--workers", str(training.PARAMS.workers),
                     "--imgsz", str(training.PARAMS.imgsz),
