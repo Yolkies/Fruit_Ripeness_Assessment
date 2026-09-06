@@ -14,7 +14,6 @@ import preprocessing
 import ripeness
 import training
 from detection import annotate, contour_count, export_for_ripeness, segment
-from ripeness import assess_detected_fruit
 from params_spec import (
     blemish_sections,
     detection_sections,
@@ -922,7 +921,7 @@ with tab_analyse:
                         try:
                             with st.spinner(f"Analyzing {predicted} ripeness..."):
                                 st.session_state["ripeness_result"] = \
-                                    assess_detected_fruit(detected)
+                                    ripeness.assess_detected_fruit(detected)
                         except Exception as exc:
                             st.error(f"Ripeness assessment failed: {exc}")
                 with col2:
@@ -932,7 +931,7 @@ with tab_analyse:
                         try:
                             with st.spinner(f"Analyzing {selected} ripeness..."):
                                 st.session_state["ripeness_result"] = \
-                                    assess_detected_fruit(detected,
+                                    ripeness.assess_detected_fruit(detected,
                                                           selected_fruit_type=selected)
                         except Exception as exc:
                             st.error(f"Ripeness assessment failed: {exc}")
@@ -941,7 +940,7 @@ with tab_analyse:
                     results = []
                     for d in result["prepared"]:
                         try:
-                            results.append(assess_detected_fruit(d))
+                            results.append(ripeness.assess_detected_fruit(d))
                         except Exception as exc:
                             st.error(f"Fruit {d['number']} failed: {exc}")
                     st.session_state["ripeness_all"] = results

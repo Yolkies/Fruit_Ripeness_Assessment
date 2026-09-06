@@ -2,12 +2,6 @@
 
 from dataclasses import dataclass
 
-from detection import (
-    CLASS_NAMES,
-    annotate,
-    crop_detection_from_original,
-    run_yolo_segmentation,
-)
 
 from fruit_ripeness.apple_ripeness.apple_ripeness_yolo import (
     assess_apple_ripeness,
@@ -237,57 +231,3 @@ def assess_detected_fruit(detected_fruit, selected_fruit_type=None):
     return normalised
 
 
-def analyze_image(image_bgr):
-    """
-    image
-        -> preprocessing
-        -> YOLO segmentation
-        -> fruit identification
-        -> ripeness assessment
-    """
-    if image_bgr is None:
-        raise ValueError("Input image is empty.")
-
-    detections = run_yolo_segmentation(image_bgr)
-
-    if not detections:
-        return {
-            "count": 0,
-            "annotated_image": image_bgr,
-            "fruits": [],
-        }
-
-    annotated_image = annotate(image_bgr, detections, show_mask=True)
-
-    fruits = []
-
-    for i, detection in enumerate(detections, start=1):
-        fruit_type = CLASS_NAMES[detection["cls"]]
-
-        (
-            original_crop,
-            fruit_mask,
-            background_removed,
-        ) = crop_detection_from_original(image_bgr, detection)
-
-        result, diagnostics = assess_single_fruit(
-            fruit_type,
-            original_crop,
-            fruit_mask,
-        )
-
-        normalised = normalise_result(fruit_type, result)
-
-        normalised["number"] = i
-        normalised["confidence"] = detection["conf"]
-        normalised["crop"] = original_crop
-        normalised["masked_crop"] = background_removed
-        normalised["diagnostics"] = diagnostics
-
-        fruits.append(normalised)
-
-    return {
-        "count": len(fruits),
-        "annotated_image": annotated_image,
-        "fruits": fruits,
-    }
