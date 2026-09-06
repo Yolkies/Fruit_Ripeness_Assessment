@@ -14,7 +14,7 @@ import numpy as np
 @dataclass
 class PreprocessResult:
     bgr: np.ndarray
-    steps: dict = field(default_factory=dict)   # intermediates, only when keep_steps
+    steps: dict = field(default_factory=dict)  
 
 
 @dataclass
@@ -26,15 +26,14 @@ class PreprocessParams:
 
     clahe_enabled: bool = True
     clahe_clip_limit: float = 1.0       # CLAHE strength
-    clahe_tile_grid: int = 8            # NxN tiles; 8 is the usual default
-    clahe_contrast_gate: float = 55.0   # skip CLAHE when L.std() is above this
+    clahe_tile_grid: int = 8            # default: 8
+    clahe_contrast_gate: float = 55.0  
 
 
 PARAMS = PreprocessParams()
 
 
 def _grayworld(image, saturation_threshold):
-    """Grey-world in numpy; fallback when cv.xphoto is unavailable."""
     src = image.astype(np.float32)
     high = src.max(axis=2)
     low = src.min(axis=2)
@@ -48,7 +47,6 @@ def _grayworld(image, saturation_threshold):
 
 def white_balance(image, saturation_threshold=0.9,
                   strength=0.5, max_gain=1.6):
-    """Remove the lighting colour cast (gain-capped, blended grey-world)."""
     try:
         wb = cv.xphoto.createGrayworldWB()
         wb.setSaturationThreshold(saturation_threshold)
@@ -71,23 +69,19 @@ def white_balance(image, saturation_threshold=0.9,
 
 
 def apply_clahe(image, clip_limit=1.0, tile_grid_size=(8, 8), contrast_gate=55.0):
-    """Even out local brightness. Returns (image, was_applied)."""
     lab = cv.cvtColor(image, cv.COLOR_BGR2LAB)
     L, A, B = cv.split(lab)
 
-    # Skipped when contrast is already high, to avoid adding artificial texture.
-    # Return the input untouched: the LAB round trip alone would shift pixels.
+    
     if float(L.std()) >= contrast_gate:
         return image, False
 
-    # L only - equalising the colour channels would shift hue, which ripeness reads.
     clahe = cv.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
     L = clahe.apply(L)
     return cv.cvtColor(cv.merge([L, A, B]), cv.COLOR_LAB2BGR), True
 
 
 def preprocess(image, keep_steps=False, params=None):
-    """Run Stage 1 and return the corrected frame."""
     p = params if params is not None else PARAMS
     steps = {}
 
@@ -115,7 +109,6 @@ def preprocess(image, keep_steps=False, params=None):
     return PreprocessResult(bgr=img, steps=steps)
 
 
-# CLI test:  python preprocessing.py <input> [output]
 if __name__ == "__main__":
     import sys
 
