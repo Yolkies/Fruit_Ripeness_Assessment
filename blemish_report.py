@@ -1,19 +1,3 @@
-"""PDF export for Module 2.4 blemish results.
-
-Builds a report containing, per fruit:
-
-    * the fruit itself (crop, defect mask, overlay)
-    * the blemish area details (metrics + per-region table)
-    * the result.txt text produced by blemish_detection.format_report()
-
-Kept separate from blemish_detection so that module has no reportlab
-dependency - detection still works if reportlab is not installed, and the
-import error only surfaces when someone actually asks for a PDF.
-
-Entry point:
-    build_pdf(items, source_name=..., annotated_image=...) -> bytes
-"""
-
 import io
 from datetime import datetime
 
@@ -298,7 +282,7 @@ def build_pdf(items, source_name=None, annotated_image=None):
         story += [Paragraph("Blemish area details", styles["h3"]),
                   side_by_side, Spacer(1, 4)]
 
-        story.append(Paragraph("Detection detail (result.txt)", styles["h3"]))
+        story.append(Paragraph("Detection detail", styles["h3"]))
         story.append(Preformatted(
             blemish_detection.format_report(item), styles["mono"]))
 
