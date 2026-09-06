@@ -51,7 +51,6 @@ DISPLAY_MAX = 480                       # max px for on-screen preview
 class AppParams:
     camera_index: int = 1
     panel_size: int = 380
-    live_interval_ms: int = 10
     crops_per_page: int = 4
     zoom_pad_percent: float = 0.15
     auto_rerun: bool = False
@@ -97,8 +96,6 @@ class PipelineGUI:
         self.ripeness_current_index = 0
         self.show_mask = tk.BooleanVar(value=False)
         self.auto_rerun = tk.BooleanVar(value=APP.auto_rerun)
-        self.cap = None                  # active VideoCapture during live mode
-        self.live = False                # live-video running flag
         self._rerun_job = None
         self._train_queue = queue.Queue()
         self._training = False
@@ -109,10 +106,6 @@ class PipelineGUI:
         ttk.Button(bar, text="Load Image", command=self.load_image).pack(side="left", padx=4)
         ttk.Button(bar, text="Capture Camera", command=self.capture_camera).pack(side="left", padx=4)
         ttk.Button(bar, text="Run Pipeline", command=self.run_pipeline).pack(side="left", padx=4)
-        self.live_btn = ttk.Button(bar, text="Live Video", command=self.start_live)
-        self.live_btn.pack(side="left", padx=4)
-        self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop_live, state="disabled")
-        self.stop_btn.pack(side="left", padx=4)
         ttk.Button(bar, text="Run Ripeness", command=self.run_ripeness).pack(side="left", padx=4)
         ttk.Button(bar, text="Run Blemish", command=self.run_blemish).pack(side="left", padx=4)
         ttk.Button(bar, text="Blemish PDF", command=self.export_blemish_pdf).pack(side="left", padx=4)
@@ -218,7 +211,6 @@ class PipelineGUI:
         app_editor = ParamEditor(lambda: None)
         app_editor.section(area.body, "Application", [
             Param("Camera index", APP, "camera_index", kind="int", lo=0, hi=8),
-            Param("Live interval (ms)", APP, "live_interval_ms", kind="int", lo=1, hi=1000),
             Param("Crops per page", APP, "crops_per_page", kind="int", lo=1, hi=4),
             Param("Single-fruit zoom pad", APP, "zoom_pad_percent",
                   kind="float", lo=0.0, hi=1.0),
@@ -230,7 +222,7 @@ class PipelineGUI:
         if self.current_img is None:
             return
         self.refresh_segmented()
-        if not self.auto_rerun.get() or self.live:
+        if not self.auto_rerun.get():
             return
         if self._rerun_job is not None:
             self.root.after_cancel(self._rerun_job)
@@ -238,7 +230,7 @@ class PipelineGUI:
 
     def rerun(self):
         self._rerun_job = None
-        if self.current_img is None or self.live:
+        if self.current_img is None:
             return
         if not self.ensure_model():
             return
@@ -362,7 +354,7 @@ class PipelineGUI:
 
     def process_frame(self, img_bgr, log_result=True):
         """Full flowchart on one BGR image; updates all three panels.
-        Returns (count, per_class). Shared by single-run and live video.
+        Returns (count, per_class).
         """
         self.current_img = img_bgr
 
@@ -408,51 +400,11 @@ class PipelineGUI:
         except Exception as exc:
             self.log(f"Pipeline failed with the current parameters: {exc}")
 
-    def start_live(self):
-        if self.live:
-            return
-        if not self.ensure_model():
-            return
-        self.cap = cv2.VideoCapture(APP.camera_index)
-        if not self.cap.isOpened():
-            messagebox.showerror("Camera", "Could not open camera.")
-            self.cap = None
-            return
-        self.live = True
-        self.live_btn.configure(state="disabled")
-        self.stop_btn.configure(state="normal")
-        self.log("\nLive video started (full pipeline per frame). Click Stop to end.")
-        self._live_loop()
-
-    def _live_loop(self):
-        if not self.live or self.cap is None:
-            return
-        ok, frame = self.cap.read()
-        if ok:
-            # full flowchart on this frame; quiet logging to avoid spam
-            count, per_class = self.process_frame(frame, log_result=False)
-            summary = ", ".join(f"{k}:{v}" for k, v in sorted(per_class.items())) or "none"
-            self.panel["seg"].master.master.configure(
-                text=f"3. Segmented + Contours  (count: {count} | {summary})")
-        # schedule next frame; ~10ms yields to the UI, real rate limited by pipeline speed
-        self.root.after(max(1, APP.live_interval_ms), self._live_loop)
-
-    def stop_live(self):
-        self.live = False
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
-        self.live_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
-        self.panel["seg"].master.master.configure(text="3. Segmented + Contours")
-        self.log("Live video stopped. Last frame kept - you can Export for Ripeness.")
-
     def refresh_segmented(self):
         """Redraw the Segmented panel, honouring the mask-overlay toggle.
         Drawn on the PRE-PROCESSED frame (the one YOLO ran on), matching the
         Streamlit app; falls back to the original before the pipeline has run.
-        When there are no detections, still show the current frame (no contours)
-        so live video keeps updating instead of appearing frozen."""
+        When there are no detections, show the frame with no contours."""
         if self.current_img is None:
             return
         base = self.pre_img if self.pre_img is not None else self.current_img
@@ -885,7 +837,6 @@ class PipelineGUI:
         self.log("  (manifest.json lists each fruit's type, area, and crop file.)")
 
     def on_close(self):
-        self.stop_live()
         self.root.destroy()
 
 
