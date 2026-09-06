@@ -54,6 +54,10 @@ class AppParams:
     crops_per_page: int = 4
     zoom_pad_percent: float = 0.15
     auto_rerun: bool = False
+    # When true, Run Blemish skips the fruit-type dialog and uses whatever
+    # labels are already set. UI behaviour only - it does not reach the
+    # blemish algorithm, which is why it lives here and not in BlemishParams.
+    skip_fruit_confirm: bool = False
 
 
 APP = AppParams()
@@ -214,6 +218,8 @@ class PipelineGUI:
             Param("Crops per page", APP, "crops_per_page", kind="int", lo=1, hi=4),
             Param("Single-fruit zoom pad", APP, "zoom_pad_percent",
                   kind="float", lo=0.0, hi=1.0),
+            Param("Skip fruit confirm (blemish)", APP, "skip_fruit_confirm",
+                  kind="bool"),
         ], 0)
         self.editors["app"] = app_editor
 
@@ -299,6 +305,7 @@ class PipelineGUI:
         self.current_img = cv2.imread(path)
         self.pre_img = None
         self.detections = []
+        self.reset_per_image_state()
         self.show("orig", self.current_img)
         self.show_preprocessed()
         self.clear_panel("seg")
@@ -335,6 +342,7 @@ class PipelineGUI:
                 self.current_img = state["frame"].copy()
                 self.pre_img = None
                 self.detections = []
+                self.reset_per_image_state()
                 self.show("orig", self.current_img)
                 self.show_preprocessed()
                 self.clear_panel("seg")
@@ -522,6 +530,18 @@ class PipelineGUI:
         if self._training:
             self.root.after(200, self._drain_training)
 
+    def reset_per_image_state(self):
+        """Drop results and label corrections that belong to the previous image.
+
+        fruit_overrides is keyed by DETECTION INDEX, which means nothing once a
+        different image is loaded - index 0 of the new frame would silently
+        inherit the correction made for index 0 of the old one.
+        """
+        self.fruit_overrides.clear()
+        self.blemish_results = []
+        self.ripeness_results = {}
+        self.ripeness_current_index = 0
+
     def confirm_fruit_types(self):
         """Modal listing every detection so its label can be corrected.
 
@@ -616,9 +636,11 @@ class PipelineGUI:
             messagebox.showwarning("No detections", "Run the pipeline first.")
             return
 
-        # Only ask if nothing has set the labels yet - a correction made in
-        # the ripeness popup already applies here.
-        if confirm and not self.fruit_overrides:
+        # Always offer the dialog. It used to be skipped whenever any override
+        # already existed, which meant that after one correction Run Blemish
+        # silently stopped asking and went straight to processing. The dialog
+        # is pre-filled with the current labels, so re-opening it loses nothing.
+        if confirm and not APP.skip_fruit_confirm:
             if not self.confirm_fruit_types():
                 return
 

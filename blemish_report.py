@@ -197,12 +197,6 @@ def _summary_table(items):
 
 
 def build_pdf(items, source_name=None, annotated_image=None):
-    """Render the blemish results to a PDF and return its bytes.
-
-    items          : list of result dicts from blemish_detection
-    source_name    : original image filename, shown on the cover
-    annotated_image: the segmented overview image, if available
-    """
     if not items:
         raise ValueError("No blemish results to export.")
 
@@ -218,7 +212,6 @@ def build_pdf(items, source_name=None, annotated_image=None):
         Paragraph("Blemish / Defect Detection Report", styles["title"]),
         Paragraph(
             f"Module 2.4 &middot; k-means darkest-cluster segmentation "
-            f"(Siridhara et al., 2023) &middot; "
             f"generated {datetime.now():%Y-%m-%d %H:%M}"
             + (f" &middot; source: {source_name}" if source_name else ""),
             styles["sub"]),
