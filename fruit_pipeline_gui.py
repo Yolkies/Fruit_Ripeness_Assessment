@@ -25,6 +25,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from PIL import Image, ImageTk
 
+import blemish_detection
 import detection
 import preprocessing
 import ripeness
@@ -38,7 +39,8 @@ from detection import (
     load_model,
     segment,
 )
-from gui import detection_panel, preprocessing_panel, ripeness_panel, ripeness_result
+from gui import (blemish_panel, detection_panel, preprocessing_panel,
+                 ripeness_panel, ripeness_result)
 from gui.param_widgets import Param, ParamEditor, ScrollableFrame
 
 
@@ -92,6 +94,8 @@ class PipelineGUI:
         self.seg_page = 0
         self.detections = []
         self.ripeness_results = {}
+        self.blemish_results = []
+        self.fruit_overrides = {}        # detection index -> user-chosen fruit
         self.ripeness_current_index = 0
         self.show_mask = tk.BooleanVar(value=False)
         self.auto_rerun = tk.BooleanVar(value=APP.auto_rerun)
@@ -112,6 +116,8 @@ class PipelineGUI:
         self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop_live, state="disabled")
         self.stop_btn.pack(side="left", padx=4)
         ttk.Button(bar, text="Run Ripeness", command=self.run_ripeness).pack(side="left", padx=4)
+        ttk.Button(bar, text="Run Blemish", command=self.run_blemish).pack(side="left", padx=4)
+        ttk.Button(bar, text="Blemish PDF", command=self.export_blemish_pdf).pack(side="left", padx=4)
         ttk.Button(bar, text="Export for Ripeness", command=self.export).pack(side="left", padx=4)
         self.train_btn = ttk.Button(bar, text="Train Model", command=self.start_training)
         self.train_btn.pack(side="left", padx=4)
@@ -201,6 +207,7 @@ class PipelineGUI:
             ("2.1", "2.1 Pre-processing", preprocessing_panel),
             ("2.2", "2.2 Detection", detection_panel),
             ("2.3", "2.3 Ripeness", ripeness_panel),
+            ("2.4", "2.4 Blemish", blemish_panel),
         ]:
             tab = ttk.Frame(book, padding=4)
             book.add(tab, text=title)
@@ -592,6 +599,188 @@ class PipelineGUI:
         if self._training:
             self.root.after(200, self._drain_training)
 
+    def confirm_fruit_types(self):
+        """Modal listing every detection so its label can be corrected.
+
+        The ripeness flow asks one fruit at a time because the label picks
+        which algorithm runs. For blemish the label is only a caption, so a
+        single confirm-all dialog is quicker. Writes into self.fruit_overrides.
+
+        Returns True to proceed, False if the user cancelled.
+        """
+        popup = tk.Toplevel(self.root)
+        popup.title("Confirm Fruit Types")
+        popup.transient(self.root)
+        popup.image_refs = []
+
+        ttk.Label(popup, text="Confirm the fruit type for each detection",
+                  font=("Arial", 11, "bold")).pack(pady=(12, 2))
+        ttk.Label(popup,
+                  text="The label is a caption for the blemish report; "
+                       "it does not change the defect measurement.",
+                  foreground="#666666").pack(pady=(0, 8))
+
+        area = ScrollableFrame(popup)
+        area.pack(fill="both", expand=True, padx=12)
+
+        options = ["Apple", "Banana", "Mango", "Orange", "Strawberry", "Tomato"]
+        rows = []
+        for index, d in enumerate(self.detections):
+            yolo_type = CLASS_NAMES[d["cls"]]
+            line = ttk.Frame(area.body)
+            line.pack(fill="x", pady=3)
+
+            crop, _mask, _masked = crop_detection_from_original(
+                self.current_img, d)
+            thumb = ripeness_result.cv_to_tk_image(crop, max_width=56,
+                                                   max_height=56)
+            if thumb is not None:
+                popup.image_refs.append(thumb)
+                ttk.Label(line, image=thumb).pack(side="left", padx=(0, 8))
+
+            ttk.Label(line, text=f"Fruit {index + 1}", width=8).pack(side="left")
+            ttk.Label(line, text=f"YOLO: {yolo_type.title()} "
+                                 f"({d['conf'] * 100:.0f}%)",
+                      width=22, foreground="#666666").pack(side="left")
+
+            current = self.fruit_overrides.get(index, yolo_type)
+            var = tk.StringVar(value=current.title())
+            ttk.Combobox(line, textvariable=var, values=options,
+                         state="readonly", width=12).pack(side="left", padx=4)
+            rows.append((index, yolo_type, var))
+
+        state = {"proceed": False}
+
+        def apply_and_run():
+            for index, yolo_type, var in rows:
+                chosen = var.get().lower()
+                if chosen != yolo_type:
+                    self.fruit_overrides[index] = chosen
+                else:
+                    self.fruit_overrides.pop(index, None)
+            state["proceed"] = True
+            popup.destroy()
+
+        def use_yolo():
+            state["proceed"] = True
+            popup.destroy()
+
+        buttons = ttk.Frame(popup)
+        buttons.pack(fill="x", padx=12, pady=12)
+        ttk.Button(buttons, text="Apply and run blemish",
+                   command=apply_and_run).pack(side="left", expand=True,
+                                               fill="x", padx=4)
+        ttk.Button(buttons, text="Use YOLO labels",
+                   command=use_yolo).pack(side="left", expand=True,
+                                          fill="x", padx=4)
+        ttk.Button(buttons, text="Cancel",
+                   command=popup.destroy).pack(side="left", expand=True,
+                                               fill="x", padx=4)
+
+        popup.update_idletasks()
+        popup.grab_set()
+        self.root.wait_window(popup)
+        return state["proceed"]
+
+    def run_blemish(self, confirm=True):
+        """Module 2.4 on every detected fruit; results go to the log and the
+        Segmented panel is replaced by the defect overlay of fruit 1.
+
+        `confirm` opens the fruit-type dialog first, unless labels were
+        already corrected in the ripeness step.
+        """
+        if not self.detections:
+            messagebox.showwarning("No detections", "Run the pipeline first.")
+            return
+
+        # Only ask if nothing has set the labels yet - a correction made in
+        # the ripeness popup already applies here.
+        if confirm and not self.fruit_overrides:
+            if not self.confirm_fruit_types():
+                return
+
+        self.log("\nBlemish detection (Siridhara et al. 2023):")
+        self.blemish_results = []
+        overlays = []
+
+        for i, d in enumerate(self.detections, start=1):
+            crop, mask, masked_crop = crop_detection_from_original(
+                self.current_img, d)
+            yolo_type = CLASS_NAMES[d["cls"]]
+            # A label the user corrected in the ripeness step wins here too.
+            fruit_type = self.fruit_overrides.get(i - 1, yolo_type)
+            try:
+                result, diagnostics = blemish_detection.assess_single_fruit(
+                    crop, mask)
+            except ValueError as exc:
+                self.log(f"  Fruit {i} ({fruit_type}): skipped - {exc}")
+                continue
+
+            result["number"] = i
+            result["fruit_type"] = fruit_type
+            result["yolo_fruit_type"] = yolo_type
+            result["fruit_type_overridden"] = fruit_type != yolo_type
+            result["diagnostics"] = diagnostics
+            self.blemish_results.append(result)
+            overlays.append(diagnostics["06_overlay"])
+
+            label = fruit_type
+            if result["fruit_type_overridden"]:
+                label += f" (corrected from {yolo_type})"
+            self.log(f"  Fruit {i} ({label}): {result['status']}"
+                     f"  {result['defect_area_pct']:.2f}% of surface"
+                     f"  ({result['blob_count']} region(s))")
+
+        if not self.blemish_results:
+            self.log("  No fruit could be assessed.")
+            return
+
+        defected = sum(1 for r in self.blemish_results
+                       if r["status"] == "Defected")
+        self.log(f"  Summary: {defected} defected, "
+                 f"{len(self.blemish_results) - defected} good.")
+
+        # Show the per-fruit defect overlays in the Preprocessed panel grid.
+        self.show("pre", build_crop_grid(overlays[:APP.crops_per_page],
+                                         self.PANEL))
+        self.crop_label.configure(
+            text=f"blemish overlays  |  {defected} defected / "
+                 f"{len(self.blemish_results)}")
+
+    def export_blemish_pdf(self):
+        """Save the blemish results as a PDF report."""
+        if not self.blemish_results:
+            messagebox.showwarning("No blemish results",
+                                   "Run Blemish first.")
+            return
+        try:
+            import blemish_report
+        except ImportError:
+            messagebox.showerror(
+                "reportlab missing",
+                "PDF export needs reportlab.\n\nInstall it with:\n"
+                "    pip install reportlab")
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pdf", initialfile="blemish_report.pdf",
+            filetypes=[("PDF", "*.pdf")])
+        if not path:
+            return
+
+        try:
+            annotated = annotate(self.current_img, self.detections,
+                                 show_mask=True)
+            pdf = blemish_report.build_pdf(self.blemish_results,
+                                           annotated_image=annotated)
+            with open(path, "wb") as handle:
+                handle.write(pdf)
+        except Exception as exc:
+            messagebox.showerror("PDF export failed", str(exc))
+            return
+
+        self.log(f"\nBlemish PDF saved: {os.path.abspath(path)}")
+
     def run_ripeness(self):
         if not self.detections:
             messagebox.showwarning("No detections", "Run the pipeline first.")
@@ -680,6 +869,11 @@ class PipelineGUI:
 
             try:
                 result = ripeness.assess_detected_fruit(detected_fruit, selected_fruit_type=selected_fruit)
+
+                # Remember the correction so the blemish stage labels this
+                # fruit the same way the ripeness panel does.
+                self.fruit_overrides[self.ripeness_current_index] = \
+                    selected_fruit.lower()
 
                 self.ripeness_results[self.ripeness_current_index] = result
 

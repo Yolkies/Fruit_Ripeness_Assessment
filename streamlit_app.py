@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import streamlit as st
 
+import blemish_detection
 import detection
 import preprocessing
 import ripeness
@@ -15,6 +16,7 @@ import training
 from detection import annotate, contour_count, export_for_ripeness, segment
 from ripeness import assess_detected_fruit
 from params_spec import (
+    blemish_sections,
     detection_sections,
     preprocessing_sections,
     ripeness_sections,
@@ -480,7 +482,8 @@ def reset_sections(sections):
 def render_sidebar():
     st.sidebar.title("Parameters")
 
-    tab1, tab2, tab3 = st.sidebar.tabs(["2.1 Pre", "2.2 Detect", "2.3 Ripeness"])
+    tab1, tab2, tab3, tab4 = st.sidebar.tabs(
+        ["2.1 Pre", "2.2 Detect", "2.3 Ripeness", "2.4 Blemish"])
 
     with tab1:
         sections = preprocessing_sections()
@@ -506,6 +509,13 @@ def render_sidebar():
         sections = ripeness_sections(fruit)
         render_sections(sections, f"p23_{fruit}")
         if st.button(f"Reset {fruit}", key=f"reset23_{fruit}"):
+            reset_sections(sections)
+            st.rerun()
+
+    with tab4:
+        sections = blemish_sections()
+        render_sections(sections, "p24")
+        if st.button("Reset 2.4", key="reset24"):
             reset_sections(sections)
             st.rerun()
 
@@ -644,6 +654,151 @@ def export_section(result):
 
 
 # ---------------------------------
+# Module 2.4 - blemish / defect
+# ---------------------------------
+
+def display_blemish_result(item):
+    """One fruit's blemish verdict: status, metrics, and the defect overlay."""
+    if "error" in item:
+        st.error(f"Fruit {item.get('number')} "
+                 f"({item.get('fruit_type')}): {item['error']}")
+        return
+
+    heading = f"### Fruit {item['number']} - {str(item['fruit_type']).title()}"
+    if item.get("fruit_type_overridden"):
+        heading += (f"  *(corrected from "
+                    f"{str(item.get('yolo_fruit_type')).title()})*")
+    st.markdown(heading)
+
+    defected = item["status"] == "Defected"
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Status", item["status"])
+    with col2:
+        st.metric("Defect area", f"{item['defect_area_pct']:.2f}%")
+    with col3:
+        st.metric("Regions", item["blob_count"])
+    with col4:
+        st.metric("Largest region", f"{item['largest_blob_px']} px")
+
+    if defected:
+        st.error(item["rule_basis"])
+    else:
+        st.success(item["rule_basis"])
+
+    diagnostics = item.get("diagnostics") or {}
+    if diagnostics:
+        shown = [
+            ("01_crop", "Fruit crop"),
+            ("03_darkest_cluster", "Darkest cluster"),
+            ("04_rejected_as_shadow", "Rejected as shadow"),
+            ("05_defect_mask", "Defect mask"),
+            ("06_overlay", "Overlay"),
+        ]
+        columns = st.columns(len(shown))
+        for column, (key, caption) in zip(columns, shown):
+            image = diagnostics.get(key)
+            if image is None:
+                continue
+            with column:
+                if image.ndim == 2:
+                    st.image(image, caption=caption, use_container_width=True)
+                else:
+                    st.image(image, channels="BGR", caption=caption,
+                             use_container_width=True)
+
+    with st.expander("Detection detail"):
+        report = blemish_detection.format_report(item)
+        st.code(report, language="text")
+        st.download_button(
+            "Download result.txt", report,
+            file_name=f"fruit_{item['number']:02d}_"
+                      f"{str(item['fruit_type']).lower()}_result.txt",
+            mime="text/plain",
+            key=f"dl_blemish_{item['number']}")
+
+
+def _blemish_pdf_button(result, items):
+    """Offer the full blemish report as a PDF download."""
+    try:
+        import blemish_report
+    except ImportError:
+        st.info("PDF export needs reportlab:  pip install reportlab")
+        return
+
+    try:
+        annotated = annotate(result["image"], result["detections"],
+                             show_mask=True)
+        pdf = blemish_report.build_pdf(
+            items,
+            source_name=st.session_state.get("last_source"),
+            annotated_image=annotated)
+    except Exception as exc:
+        st.error(f"Could not build the PDF: {exc}")
+        return
+
+    st.download_button(
+        "Export report as PDF", pdf,
+        file_name="blemish_report.pdf",
+        mime="application/pdf",
+        type="primary",
+        key="dl_blemish_pdf")
+
+
+def blemish_section(result):
+    """Run module 2.4 over every detection of the current pipeline result."""
+    if not result.get("detections"):
+        return
+
+    st.markdown("## Blemish / Defect Detection")
+    st.caption("Siridhara et al. (2023) - k-means segmentation, "
+               "darkest cluster, area + chroma filtering.")
+
+    overrides = st.session_state.get("fruit_overrides", {})
+    if overrides:
+        st.caption("Using your corrected fruit labels: "
+                   + ", ".join(f"#{n} -> {t.title()}"
+                               for n, t in sorted(overrides.items())))
+
+    if st.button("Detect blemishes on all fruits", key="go_blemish"):
+        items = []
+        for prepared in result["prepared"]:
+            try:
+                items.append(blemish_detection.assess_detected_fruit(
+                    prepared,
+                    selected_fruit_type=overrides.get(prepared["number"])))
+            except Exception as exc:
+                items.append({"number": prepared.get("number"),
+                              "fruit_type": prepared.get("yolo_fruit_type"),
+                              "error": str(exc)})
+        st.session_state["blemish_all"] = items
+
+    items = st.session_state.get("blemish_all")
+    if not items:
+        return
+
+    good = sum(1 for i in items if i.get("status") == "Good")
+    bad = sum(1 for i in items if i.get("status") == "Defected")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Assessed", len(items))
+    col2.metric("Good", good)
+    col3.metric("Defected", bad)
+
+    rows = [{"Fruit": i.get("number"),
+             "Type": str(i.get("fruit_type", "")).title(),
+             "YOLO said": str(i.get("yolo_fruit_type", "")).title(),
+             "Status": i.get("status", "error"),
+             "Defect %": i.get("defect_area_pct"),
+             "Regions": i.get("blob_count")} for i in items]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    _blemish_pdf_button(result, items)
+
+    for item in items:
+        display_blemish_result(item)
+
+
+# ---------------------------------
 # Training
 # ---------------------------------
 
@@ -750,6 +905,8 @@ with tab_analyse:
             st.session_state["last_source"] = source_name
             st.session_state.pop("pipeline_result", None)
             st.session_state.pop("ripeness_result", None)
+            st.session_state.pop("blemish_all", None)
+            st.session_state.pop("fruit_overrides", None)
 
         show_mask = st.checkbox("Show mask overlay", value=True, key="show_mask")
 
@@ -758,6 +915,8 @@ with tab_analyse:
                 with st.spinner("Running modules 2.1 and 2.2..."):
                     st.session_state["pipeline_result"] = run_pipeline(image_bgr)
                 st.session_state.pop("ripeness_result", None)
+                st.session_state.pop("blemish_all", None)
+                st.session_state.pop("fruit_overrides", None)
             except Exception as exc:
                 st.error(f"Pipeline failed: {exc}")
 
@@ -824,3 +983,5 @@ with tab_analyse:
             st.markdown("## Ripeness Assessment - all fruits")
             for item in st.session_state["ripeness_all"]:
                 display_fruit_result(item)
+
+        blemish_section(result)

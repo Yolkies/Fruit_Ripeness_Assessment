@@ -1,5 +1,6 @@
 import numpy as np
 
+import blemish_detection
 import detection
 import preprocessing
 import ripeness
@@ -249,3 +250,29 @@ def ripeness_sections(fruit):
         ]
 
     return []
+
+
+def blemish_sections():
+    p = blemish_detection.PARAMS
+    return [
+        ("Segmentation", [
+            Param("Clusters (k)", p, "clusters", kind="int", lo=2, hi=8),
+            Param("Boundary erosion", p, "boundary_erosion_frac",
+                  kind="float", lo=0.0, hi=0.2, step=0.005),
+        ]),
+        ("Blob area (fraction of fruit)", [
+            Param("Min area", p, "min_area_frac",
+                  kind="float", lo=0.0, hi=0.05, step=0.0001),
+            Param("Max area", p, "max_area_frac",
+                  kind="float", lo=0.01, hi=1.0, step=0.01),
+        ]),
+        ("Shadow rejection", [
+            Param("Use chroma test", p, "use_chroma_test", kind="bool"),
+            Param("Max chroma ratio", p, "max_chroma_ratio",
+                  kind="float", lo=0.0, hi=1.5, step=0.01),
+        ]),
+        ("Verdict", [
+            Param("Defect threshold %", p, "defect_threshold_pct",
+                  kind="float", lo=0.0, hi=100.0, step=0.5),
+        ]),
+    ]
