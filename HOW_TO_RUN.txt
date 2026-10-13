@@ -1,0 +1,172 @@
+===============================================================
+  FRUIT RIPENESS ASSESSMENT - HOW TO RUN (WINDOWS)
+===============================================================
+
+  SHORT VERSION
+  -------------
+  First time on a computer : SETUP.bat , then RUN.bat
+  Every time after that    : RUN.bat only
+
+
+===============================================================
+  STEP 1 - GET THE FILES
+===============================================================
+
+  Download the project as a ZIP and extract it
+  (right-click -> "Extract All..."), or clone it with git.
+
+  Open the folder. You should see SETUP.bat and RUN.bat.
+
+  Do NOT run the .bat files from inside the ZIP - extract
+  it first.
+
+
+===============================================================
+  STEP 2 - INSTALL (only the first time on a computer)
+===============================================================
+
+  Double-click:   SETUP.bat
+
+  A black window opens. It will:
+    1. Find Python 3.10-3.12 (or download a private copy)
+    2. Create a virtual environment for this project
+    3. Prepare pip
+    4. Install PyTorch, Ultralytics YOLO, OpenCV, Streamlit
+       and the other packages
+    5. Check that everything works and the model loads
+
+  This needs INTERNET and takes a few minutes
+  (about 300 MB to download).
+
+  THE GPU QUESTION
+      If an NVIDIA graphics card is found, setup asks:
+          Install the GPU build of PyTorch? [Y/N]
+      N  is fine for using the app. Everything runs on the
+         CPU.
+      Y  only helps if you want to train your own model.
+         It is about 2.5 GB.
+      You can change your mind later by running
+          SETUP.bat gpu     or     SETUP.bat cpu
+
+  Wait until you see:
+
+      ===============================================
+        SETUP COMPLETE
+        Now double-click RUN.bat to start the app.
+      ===============================================
+
+  Then press any key to close the window.
+
+  If Windows shows a blue "Windows protected your PC" box,
+  click "More info" -> "Run anyway". The .bat files are not
+  digitally signed.
+
+  Nothing is installed system-wide and no administrator
+  password is needed. Everything goes into:
+      C:\Users\<you>\AppData\Local\FruitRipeness
+
+
+===============================================================
+  STEP 3 - RUN THE APP
+===============================================================
+
+  Double-click:   RUN.bat
+
+  Your web browser opens at:
+
+      http://localhost:8501
+
+  (If another app already uses 8501, the next free port is
+  used instead. The black window shows the address.)
+
+  KEEP THE BLACK WINDOW OPEN while you use the app.
+  Closing it stops the app.
+
+  Prefer a normal desktop window instead of the browser?
+  Open a terminal in the project folder and run:
+
+      RUN.bat desktop
+
+
+===============================================================
+  STEP 4 - USING THE APP
+===============================================================
+
+  1. Choose "Upload image" and pick a photo of fruit
+     (there is a sample in the samples folder), or use
+     "Camera".
+
+  2. Click "Run pipeline". The fruit are found, outlined
+     and counted.
+
+  3. Under "Confirm fruit type", check the fruit type.
+       "Continue with ..."  accepts what the model found
+       "Analyze as ..."     uses the fruit you selected
+     You get the ripeness index, the colour percentages
+     and the rule that was used.
+
+  4. Click "Detect blemishes on all fruits" to check each
+     fruit for damage. "Export report as PDF" saves the
+     result as a PDF.
+
+  5. The settings are in the sidebar (">" at the top left),
+     one tab per step. Each tab has a reset button.
+
+  Supported fruit: apple, banana, mango, orange,
+  strawberry, tomato.
+
+  The first run takes a few seconds while the model loads.
+  After that it is quick.
+
+
+===============================================================
+  NEXT TIME
+===============================================================
+
+  SAME COMPUTER      Just double-click RUN.bat.
+  OTHER COMPUTER     Run SETUP.bat once there first.
+  NO INTERNET        Fine, once SETUP.bat has finished.
+
+
+===============================================================
+  IF SOMETHING GOES WRONG
+===============================================================
+
+  Whatever the problem, run SETUP.bat again first. It is safe
+  to re-run and prints a check of everything at the end.
+
+  "DLL load failed ... Application Control policy has
+  blocked this file"
+      Windows Smart App Control blocked the Python that setup
+      downloaded, because it is not signed. Install Python 3.12
+      from https://www.python.org/downloads/ , delete
+          C:\Users\<you>\AppData\Local\FruitRipeness
+      and run SETUP.bat again.
+
+  The browser did not open
+      Open the address shown in the black window yourself.
+
+  The browser says "can't reach this page"
+      The app is still starting. Wait a few seconds and
+      refresh. Check the black window is still open.
+
+  No fruit found
+      Lower "Confidence" in the "2.2 Detect" tab of the
+      sidebar, or use a photo where the fruit is larger.
+
+  The camera does not work
+      Allow camera access when the browser asks.
+
+
+===============================================================
+  UNINSTALL
+===============================================================
+
+  Delete the folder:
+      C:\Users\<you>\AppData\Local\FruitRipeness
+
+  That removes the Python runtime and the packages. Nothing
+  else on the computer was changed. Then delete the project
+  folder itself.
+
+===============================================================

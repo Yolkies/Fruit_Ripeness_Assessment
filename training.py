@@ -5,7 +5,6 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 CLASS_NAMES = ["apple", "banana", "mango", "orange", "strawberry", "tomato"]
@@ -25,7 +24,7 @@ class TrainParams:
     patience: int = 50
     imgsz: int = 640
     batch: int = 8
-    device: str = "0"
+    device: str = ""
     workers: int = 2
     runs_dir: str = "runs/segment/Fruit_Project"
     run_name: str = "segmentation_run"
@@ -115,8 +114,11 @@ def build_dataset(params=None, log=None):
         raise RuntimeError("No usable images found.")
 
     labelled = sum(1 for _, lines in records if lines)
-    _log(f"Usable images: {len(records)} ({labelled} labelled, "
-         f"{len(records) - labelled} negatives)", log)
+    _log(
+        f"Usable images: {len(records)} ({labelled} labelled, "
+        f"{len(records) - labelled} negatives)",
+        log,
+    )
     if missing:
         _log(f"Skipped {missing} entries whose image file was not found.", log)
     if collided:
@@ -135,17 +137,12 @@ def build_dataset(params=None, log=None):
         (root / part / "labels").mkdir(parents=True, exist_ok=True)
         for path, lines in rows:
             shutil.copy2(path, root / part / "images" / path.name)
-            label = (root / part / "labels" / (path.stem + ".txt"))
+            label = root / part / "labels" / (path.stem + ".txt")
             label.write_text("\n".join(lines), encoding="utf-8")
         _log(f"{part}: {len(rows)} images", log)
 
     yaml_path = root / "data.yaml"
-    lines = [
-        "train: train/images",
-        "val: val/images",
-        "",
-        "names:",
-    ]
+    lines = ["train: train/images", "val: val/images", "", "names:"]
     lines += [f"  {i}: {name}" for i, name in enumerate(CLASS_NAMES)]
     yaml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     _log(f"Wrote {yaml_path}", log)
@@ -158,8 +155,11 @@ def train(data_yaml, params=None, log=None):
 
     p = params if params is not None else PARAMS
     name = run_name_for(p)
-    _log(f"Training {p.base_model} for {p.epochs} epochs "
-         f"(patience {p.patience}) into {p.runs_dir}/{name}", log)
+    _log(
+        f"Training {p.base_model} for {p.epochs} epochs "
+        f"(patience {p.patience}) into {p.runs_dir}/{name}",
+        log,
+    )
 
     model = YOLO(p.base_model)
     results = model.train(
@@ -168,7 +168,7 @@ def train(data_yaml, params=None, log=None):
         patience=p.patience,
         imgsz=p.imgsz,
         batch=p.batch,
-        device=p.device,
+        device=p.device or None,
         workers=p.workers,
         project=str(resolve_path(p.runs_dir)),
         name=name,

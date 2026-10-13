@@ -1,0 +1,10 @@
+[server]
+headless = true
+address = "localhost"
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"

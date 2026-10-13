@@ -1,5 +1,3 @@
-"""Module 2.2 parameter panel - Fruit Detection and Instance Segmentation."""
-
 import os
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -28,13 +26,20 @@ def build(parent, on_change, on_model_change=None):
                 path = filedialog.askopenfilename(
                     title="Select YOLO weights",
                     initialdir=os.path.dirname(
-                        detection.resolve_path(detection.PARAMS.model_path)) or ".",
-                    filetypes=[("YOLO weights", "*.pt"), ("All files", "*.*")])
+                        detection.resolve_path(detection.PARAMS.model_path)
+                    )
+                    or ".",
+                    filetypes=[("YOLO weights", "*.pt"), ("All files", "*.*")],
+                )
                 if not path:
                     return
                 try:
-                    path = Path(path).resolve().relative_to(
-                        detection.PROJECT_ROOT).as_posix()
+                    path = (
+                        Path(path)
+                        .resolve()
+                        .relative_to(detection.PROJECT_ROOT)
+                        .as_posix()
+                    )
                 except ValueError:
                     pass
                 model_param.set(path)
@@ -44,10 +49,12 @@ def build(parent, on_change, on_model_change=None):
                 on_change()
 
             ttk.Button(frame, text="Browse...", command=browse).grid(
-                row=len(params), column=1, columnspan=2, sticky="e", pady=(4, 0))
+                row=len(params), column=1, columnspan=2, sticky="e", pady=(4, 0)
+            )
         row += 1
 
     ttk.Button(body, text="Reset 2.2 defaults", command=editor.reset).grid(
-        row=row, column=0, sticky="w", padx=4, pady=6)
+        row=row, column=0, sticky="w", padx=4, pady=6
+    )
 
     return editor

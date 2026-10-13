@@ -1,125 +1,16 @@
-# pip install opencv-python numpy
-
-"""
-BANANA RIPENESS ANALYSIS - YELLOW + BROWN METHOD
-=================================================
-
-MAIN REFERENCE - BROWN SPOTTING / RIPENING
--------------------------------------------
-Mendoza, F. & Aguilera, J. M. (2004),
-"Application of Image Analysis for Classification of Ripening Bananas",
-Journal of Food Science, 69(9), E471-E477.
-DOI: 10.1111/j.1365-2621.2004.tb09932.x
-
-The paper supports using banana peel colour together with brown-spot area as
-ripening features. It defines %BSA as brown spots as a percentage of the total
-banana area and reports that %BSA increases during late ripening, with final
-values in the experiment ranging approximately from 20% to 50%.
-
-The standard 7-stage visual scale discussed in the paper is:
-    Index 1 : green
-    Index 2 : green, traces of yellow
-    Index 3 : more green than yellow
-    Index 4 : more yellow than green
-    Index 5 : green tip and yellow
-    Index 6 : all yellow
-    Index 7 : yellow, flecked with brown
-
-IMPORTANT PROJECT INTERPRETATION
---------------------------------
-The paper supports brown-area percentage as a useful ripeness feature and
-reports late-ripening %BSA values reaching about 20-50%. It does NOT state an
-official rule that exactly 20% brown must equal Index 7.
-
-For this project, 20% is therefore used as an operational heavy-brown cutoff:
-
-    FIRST: brown coverage >= 20% -> Index 7 - Overripe
-
-This prevents a heavily blemished/brown banana with very little yellow left
-from being incorrectly classified as Index 1 simply because yellow coverage is
-low.
-
-YELLOW MASK
------------
-The existing project yellow mask is kept unchanged:
-    OpenCV H = 20-35
-    OpenCV S = 40-255
-    OpenCV V = 80-255
-
-BROWN MASK
-----------
-The existing project brown mask is kept unchanged:
-    OpenCV H = 0-25
-    OpenCV S = 64-255
-    OpenCV V = 0-153
-
-Brown is detected before yellow, and brown pixels are removed from the yellow
-mask so that the same pixel is not counted as both yellow and brown.
-
-FINAL DECISION RULE ORDER
--------------------------
-1. Brown coverage >= 20%
-       -> Index 7 - Overripe / heavy brown
-
-2. Small brown spotting on an otherwise developed yellow banana
-       developed peel >= 95% AND brown > 1%
-       -> Index 7 - Overripe / brown-spotted
-
-3. Otherwise classify by yellow coverage:
-       Yellow <= 1%          -> Index 1
-       Yellow < 30%          -> Index 2
-       30% <= Yellow < 50%   -> Index 3
-       50% <= Yellow <= 80%  -> Index 4
-       80% < Yellow < 95%    -> Index 5
-       Yellow >= 95%         -> Index 6
-
-PROJECT TOLERANCES
-------------------
-- Yellow <= 1% is treated as Index 1 to ignore isolated yellow noise pixels.
-- Yellow >= 95% is treated as completely yellow because exact 100% is
-  unrealistic in normal photographs.
-- Brown > 1% is used for small brown spotting to avoid isolated brown noise.
-- developed peel = yellow pixels + brown pixels.
-
-PIPELINE
---------
-Teammate YOLO banana mask
-    -> original-colour banana pixels
-    -> OpenCV HSV
-    -> brown mask FIRST
-    -> yellow mask with brown pixels excluded
-    -> yellow/brown/developed-peel coverage
-    -> Index 1-7
-
-No CLAHE, white balance, or colour enhancement is applied to ripeness pixels.
-"""
-
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
 
-
-# ---------------------------------------------------------------------------
-# Yellow mask
-# ---------------------------------------------------------------------------
-
 YELLOW_LOWER = np.array([20, 40, 80], dtype=np.uint8)
 YELLOW_UPPER = np.array([35, 255, 255], dtype=np.uint8)
 
 
-# ---------------------------------------------------------------------------
-# Brown mask
-# ---------------------------------------------------------------------------
-
 BROWN_LOWER = np.array([0, 64, 0], dtype=np.uint8)
 BROWN_UPPER = np.array([25, 255, 153], dtype=np.uint8)
 
-
-# ---------------------------------------------------------------------------
-# Project operational thresholds
-# ---------------------------------------------------------------------------
 
 INDEX1_YELLOW_NOISE_MAX = 1.0
 COMPLETE_YELLOW_MIN = 95.0
@@ -150,31 +41,20 @@ class BananaRipenessResult:
 
 
 def _normalise_binary_mask(
-    mask: np.ndarray,
-    target_shape: Tuple[int, int],
+    mask: np.ndarray, target_shape: Tuple[int, int]
 ) -> np.ndarray:
-    """Convert a supplied YOLO mask to uint8 values 0 or 255."""
     if mask.ndim == 3:
         mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
 
     if mask.shape[:2] != target_shape:
         mask = cv2.resize(
-            mask,
-            (target_shape[1], target_shape[0]),
-            interpolation=cv2.INTER_NEAREST,
+            mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_NEAREST
         )
 
     return (mask > 0).astype(np.uint8) * 255
 
 
-def fruit_mask_from_black_background(
-    masked_crop_bgr: np.ndarray,
-) -> np.ndarray:
-    """
-    Fallback only.
-
-    Final integration should pass the teammate YOLO mask directly.
-    """
+def fruit_mask_from_black_background(masked_crop_bgr: np.ndarray) -> np.ndarray:
     if masked_crop_bgr is None or masked_crop_bgr.size == 0:
         raise ValueError("Input banana crop is empty")
 
@@ -183,10 +63,8 @@ def fruit_mask_from_black_background(
 
 
 def prepare_banana_for_colour_analysis(
-    original_crop_bgr: np.ndarray,
-    fruit_mask: Optional[np.ndarray] = None,
+    original_crop_bgr: np.ndarray, fruit_mask: Optional[np.ndarray] = None
 ) -> Dict[str, np.ndarray]:
-    """Prepare original-colour banana pixels for HSV analysis."""
     if original_crop_bgr is None or original_crop_bgr.size == 0:
         raise ValueError("Input banana crop is empty")
 
@@ -195,41 +73,25 @@ def prepare_banana_for_colour_analysis(
     if fruit_mask is None:
         fruit_mask = fruit_mask_from_black_background(original_crop_bgr)
     else:
-        fruit_mask = _normalise_binary_mask(
-            fruit_mask,
-            (h, w),
-        )
+        fruit_mask = _normalise_binary_mask(fruit_mask, (h, w))
 
     bgr = original_crop_bgr.copy()
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-    return {
-        "bgr": bgr,
-        "hsv": hsv,
-        "fruit_mask": fruit_mask,
-    }
+    return {"bgr": bgr, "hsv": hsv, "fruit_mask": fruit_mask}
 
 
 def _masked_range(
-    hsv: np.ndarray,
-    lower: np.ndarray,
-    upper: np.ndarray,
-    fruit_mask: np.ndarray,
+    hsv: np.ndarray, lower: np.ndarray, upper: np.ndarray, fruit_mask: np.ndarray
 ) -> np.ndarray:
-    """Create an HSV range mask restricted to the YOLO banana ROI."""
     raw = cv2.inRange(hsv, lower, upper)
     return cv2.bitwise_and(raw, fruit_mask)
 
 
 def measure_banana_features(
-    original_crop_bgr: np.ndarray,
-    fruit_mask: Optional[np.ndarray] = None,
+    original_crop_bgr: np.ndarray, fruit_mask: Optional[np.ndarray] = None
 ):
-    """Measure yellow and brown coverage inside the YOLO banana mask."""
-    data = prepare_banana_for_colour_analysis(
-        original_crop_bgr,
-        fruit_mask=fruit_mask,
-    )
+    data = prepare_banana_for_colour_analysis(original_crop_bgr, fruit_mask=fruit_mask)
 
     hsv = data["hsv"]
     roi = data["fruit_mask"]
@@ -239,43 +101,15 @@ def measure_banana_features(
     if total == 0:
         raise ValueError("YOLO banana mask contains no fruit pixels")
 
-    # IMPORTANT: brown is calculated first.
-    brown_mask = _masked_range(
-        hsv,
-        BROWN_LOWER,
-        BROWN_UPPER,
-        roi,
-    )
+    brown_mask = _masked_range(hsv, BROWN_LOWER, BROWN_UPPER, roi)
+    yellow_raw = _masked_range(hsv, YELLOW_LOWER, YELLOW_UPPER, roi)
 
-    yellow_raw = _masked_range(
-        hsv,
-        YELLOW_LOWER,
-        YELLOW_UPPER,
-        roi,
-    )
-
-    # Brown gets priority so one pixel cannot be both yellow and brown.
-    yellow_mask = cv2.bitwise_and(
-        yellow_raw,
-        cv2.bitwise_not(brown_mask),
-    )
+    yellow_mask = cv2.bitwise_and(yellow_raw, cv2.bitwise_not(brown_mask))
     yellow_mask = cv2.bitwise_and(yellow_mask, roi)
 
-    # Developed peel = yellow or brown.
-    developed_peel_mask = cv2.bitwise_or(
-        yellow_mask,
-        brown_mask,
-    )
-    developed_peel_mask = cv2.bitwise_and(
-        developed_peel_mask,
-        roi,
-    )
-
-    # Anything inside the fruit ROI that is neither yellow nor brown.
-    other_mask = cv2.bitwise_and(
-        roi,
-        cv2.bitwise_not(developed_peel_mask),
-    )
+    developed_peel_mask = cv2.bitwise_or(yellow_mask, brown_mask)
+    developed_peel_mask = cv2.bitwise_and(developed_peel_mask, roi)
+    other_mask = cv2.bitwise_and(roi, cv2.bitwise_not(developed_peel_mask))
 
     yellow_pixels = int(cv2.countNonZero(yellow_mask))
     brown_pixels = int(cv2.countNonZero(brown_mask))
@@ -286,8 +120,6 @@ def measure_banana_features(
     brown_pct = 100.0 * brown_pixels / total
     developed_peel_pct = 100.0 * developed_peel_pixels / total
     other_pct = 100.0 * other_pixels / total
-
-    # Brown spot area / total banana area.
     ripeness_factor = brown_pixels / total
 
     result = BananaRipenessResult(
@@ -318,31 +150,11 @@ def measure_banana_features(
     return result, diagnostics
 
 
-def classify_banana(
-    measurement: BananaRipenessResult,
-) -> BananaRipenessResult:
-    """
-    Apply banana Index 1-7 with brown checked FIRST.
-
-    Exact rule order:
-        Brown >= 20%             -> Index 7
-        Small brown on developed yellow peel -> Index 7
-        Yellow <= 1%             -> Index 1
-        Yellow < 30%             -> Index 2
-        30% <= Yellow < 50%      -> Index 3
-        50% <= Yellow <= 80%     -> Index 4
-        80% < Yellow < 95%       -> Index 5
-        Yellow >= 95%            -> Index 6
-    """
+def classify_banana(measurement: BananaRipenessResult) -> BananaRipenessResult:
     yellow = measurement.yellow_pct
     brown = measurement.brown_pct
     developed = measurement.developed_peel_pct
 
-    # ------------------------------------------------------------------
-    # FIRST CHECK: heavy brown area overrides yellow percentage.
-    # This solves the case where a very blemished banana has almost no
-    # remaining yellow and would otherwise incorrectly fall into Index 1.
-    # ------------------------------------------------------------------
     if brown >= HEAVY_BROWN_OVERRIPE_MIN:
         measurement.ripeness_index = 7
         measurement.ripeness_label = "Index 7 - Overripe / heavy brown"
@@ -351,7 +163,6 @@ def classify_banana(
             f"{HEAVY_BROWN_OVERRIPE_MIN:.1f}% brown-first threshold."
         )
 
-    # Small brown spotting on an otherwise developed yellow banana.
     elif developed >= DEVELOPED_PEEL_MIN and brown > BROWN_SPOT_MIN:
         measurement.ripeness_index = 7
         measurement.ripeness_label = "Index 7 - Overripe / brown-spotted"
@@ -361,13 +172,11 @@ def classify_banana(
             f"{BROWN_SPOT_MIN:.1f}% small-spot tolerance."
         )
 
-    # Otherwise classify using yellow coverage.
     elif yellow >= COMPLETE_YELLOW_MIN:
         measurement.ripeness_index = 6
         measurement.ripeness_label = "Index 6 - Completely yellow"
         measurement.rule_basis = (
-            f"Yellow coverage={yellow:.2f}% >= "
-            f"{COMPLETE_YELLOW_MIN:.1f}%."
+            f"Yellow coverage={yellow:.2f}% >= {COMPLETE_YELLOW_MIN:.1f}%."
         )
 
     elif yellow > 80.0:
@@ -381,16 +190,12 @@ def classify_banana(
     elif yellow >= 50.0:
         measurement.ripeness_index = 4
         measurement.ripeness_label = "Index 4 - 50-80% yellow"
-        measurement.rule_basis = (
-            f"Yellow coverage={yellow:.2f}% is 50-80%."
-        )
+        measurement.rule_basis = f"Yellow coverage={yellow:.2f}% is 50-80%."
 
     elif yellow >= 30.0:
         measurement.ripeness_index = 3
         measurement.ripeness_label = "Index 3 - 30-50% yellow"
-        measurement.rule_basis = (
-            f"Yellow coverage={yellow:.2f}% is >=30% and <50%."
-        )
+        measurement.rule_basis = f"Yellow coverage={yellow:.2f}% is >=30% and <50%."
 
     elif yellow > INDEX1_YELLOW_NOISE_MAX:
         measurement.ripeness_index = 2
@@ -413,13 +218,10 @@ def classify_banana(
 
 
 def assess_banana_ripeness(
-    original_crop_bgr: np.ndarray,
-    fruit_mask: Optional[np.ndarray] = None,
+    original_crop_bgr: np.ndarray, fruit_mask: Optional[np.ndarray] = None
 ):
-    """YOLO mask -> HSV yellow/brown masks -> Index 1-7."""
     result, diagnostics = measure_banana_features(
-        original_crop_bgr,
-        fruit_mask=fruit_mask,
+        original_crop_bgr, fruit_mask=fruit_mask
     )
 
     result = classify_banana(result)
@@ -427,11 +229,7 @@ def assess_banana_ripeness(
     return result, diagnostics
 
 
-def save_diagnostics(
-    out_dir: str,
-    diagnostics: Dict[str, np.ndarray],
-) -> None:
-    """Save banana ripeness debug images."""
+def save_diagnostics(out_dir: str, diagnostics: Dict[str, np.ndarray]) -> None:
     import os
 
     os.makedirs(out_dir, exist_ok=True)
@@ -443,15 +241,9 @@ def save_diagnostics(
         "developed_peel_mask",
         "other_mask",
     ):
-        cv2.imwrite(
-            os.path.join(out_dir, f"{name}.png"),
-            diagnostics[name],
-        )
+        cv2.imwrite(os.path.join(out_dir, f"{name}.png"), diagnostics[name])
 
-    cv2.imwrite(
-        os.path.join(out_dir, "input_original_colour.png"),
-        diagnostics["bgr"],
-    )
+    cv2.imwrite(os.path.join(out_dir, "input_original_colour.png"), diagnostics["bgr"])
 
 
 if __name__ == "__main__":
@@ -464,20 +256,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "image",
-        help="Original-colour banana crop/image",
-    )
-
-    parser.add_argument(
-        "--mask",
-        help="Optional YOLO binary banana mask",
-    )
-
-    parser.add_argument(
-        "--out",
-        default=str(DEFAULT_DEBUG_DIR),
-    )
+    parser.add_argument("image", help="Original-colour banana crop/image")
+    parser.add_argument("--mask", help="Optional YOLO binary banana mask")
+    parser.add_argument("--out", default=str(DEFAULT_DEBUG_DIR))
 
     args = parser.parse_args()
 
@@ -494,10 +275,7 @@ if __name__ == "__main__":
         if mask is None:
             raise SystemExit(f"Cannot read mask: {args.mask}")
 
-    result, diagnostics = assess_banana_ripeness(
-        img,
-        fruit_mask=mask,
-    )
+    result, diagnostics = assess_banana_ripeness(img, fruit_mask=mask)
 
     print("\nBANANA RIPENESS RESULT")
     print("----------------------")
@@ -516,7 +294,4 @@ if __name__ == "__main__":
 
     save_diagnostics(args.out, diagnostics)
 
-    print(
-        "\nDiagnostic masks saved to:",
-        os.path.abspath(args.out),
-    )
+    print("\nDiagnostic masks saved to:", os.path.abspath(args.out))

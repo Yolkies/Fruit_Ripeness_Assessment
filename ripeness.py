@@ -1,32 +1,13 @@
-"""Module 2.3 - Colour-Based Fruit Ripeness Assessment."""
-
 from dataclasses import dataclass
 
-
-from fruit_ripeness.apple_ripeness.apple_ripeness_yolo import (
-    assess_apple_ripeness,
-)
-
-from fruit_ripeness.banana_ripeness.banana_ripeness_yolo import (
-    assess_banana_ripeness,
-)
-
-from fruit_ripeness.mango_ripeness.mango_ripeness_yolo import (
-    assess_mango_ripeness,
-)
-
-from fruit_ripeness.orange_ripeness.orange_ripeness_yolo import (
-    assess_orange_ripeness,
-)
-
+from fruit_ripeness.apple_ripeness.apple_ripeness_yolo import assess_apple_ripeness
+from fruit_ripeness.banana_ripeness.banana_ripeness_yolo import assess_banana_ripeness
+from fruit_ripeness.mango_ripeness.mango_ripeness_yolo import assess_mango_ripeness
+from fruit_ripeness.orange_ripeness.orange_ripeness_yolo import assess_orange_ripeness
 from fruit_ripeness.strawberry_ripeness.strawberry_ripeness_yolo import (
     assess_strawberry_ripeness,
 )
-
-from fruit_ripeness.tomato_ripeness.tomato_ripeness_yolo import (
-    assess_tomato_ripeness,
-)
-
+from fruit_ripeness.tomato_ripeness.tomato_ripeness_yolo import assess_tomato_ripeness
 from fruit_ripeness.apple_ripeness import apple_ripeness_yolo
 from fruit_ripeness.banana_ripeness import banana_ripeness_yolo
 from fruit_ripeness.mango_ripeness import mango_ripeness_yolo
@@ -34,9 +15,6 @@ from fruit_ripeness.orange_ripeness import orange_ripeness_yolo
 from fruit_ripeness.strawberry_ripeness import strawberry_ripeness_yolo
 from fruit_ripeness.tomato_ripeness import tomato_ripeness_yolo
 
-
-# Per-fruit threshold constants live in these modules and are read at call
-# time, so the GUI tunes ripeness by writing to them.
 FRUIT_MODULES = {
     "apple": apple_ripeness_yolo,
     "banana": banana_ripeness_yolo,
@@ -56,33 +34,26 @@ PARAMS = RipenessParams()
 
 
 def assess_single_fruit(fruit_type, original_crop, fruit_mask):
-    """
-    Send a detected fruit to its existing ripeness algorithm.
-    """
     fruit_type = fruit_type.lower()
 
     if fruit_type == "apple":
         result, diagnostics = assess_apple_ripeness(
-            original_crop,
-            fruit_mask=fruit_mask,
+            original_crop, fruit_mask=fruit_mask
         )
 
     elif fruit_type == "banana":
         result, diagnostics = assess_banana_ripeness(
-            original_crop,
-            fruit_mask=fruit_mask,
+            original_crop, fruit_mask=fruit_mask
         )
 
     elif fruit_type == "mango":
         result, diagnostics = assess_mango_ripeness(
-            original_crop,
-            fruit_mask=fruit_mask,
+            original_crop, fruit_mask=fruit_mask
         )
 
     elif fruit_type == "orange":
         result, diagnostics = assess_orange_ripeness(
-            original_crop,
-            fruit_mask=fruit_mask,
+            original_crop, fruit_mask=fruit_mask
         )
 
     elif fruit_type == "strawberry":
@@ -94,8 +65,7 @@ def assess_single_fruit(fruit_type, original_crop, fruit_mask):
 
     elif fruit_type == "tomato":
         result, diagnostics = assess_tomato_ripeness(
-            original_crop,
-            fruit_mask=fruit_mask,
+            original_crop, fruit_mask=fruit_mask
         )
 
     else:
@@ -105,10 +75,6 @@ def assess_single_fruit(fruit_type, original_crop, fruit_mask):
 
 
 def normalise_result(fruit_type, result):
-    """
-    Convert the six different result dataclasses into one
-    common format for the UI.
-    """
     fruit_type = fruit_type.lower()
 
     if fruit_type == "apple":
@@ -198,10 +164,6 @@ def normalise_result(fruit_type, result):
 
 
 def assess_detected_fruit(detected_fruit, selected_fruit_type=None):
-    """
-    Run ripeness assessment after the user confirms
-    or overrides YOLO's fruit prediction.
-    """
     yolo_fruit_type = detected_fruit["yolo_fruit_type"]
 
     if selected_fruit_type is None:
@@ -212,11 +174,7 @@ def assess_detected_fruit(detected_fruit, selected_fruit_type=None):
     original_crop = detected_fruit["crop"]
     fruit_mask = detected_fruit["fruit_mask"]
 
-    result, diagnostics = assess_single_fruit(
-        fruit_type,
-        original_crop,
-        fruit_mask,
-    )
+    result, diagnostics = assess_single_fruit(fruit_type, original_crop, fruit_mask)
 
     normalised = normalise_result(fruit_type, result)
 
@@ -229,5 +187,3 @@ def assess_detected_fruit(detected_fruit, selected_fruit_type=None):
     normalised["diagnostics"] = diagnostics
 
     return normalised
-
-

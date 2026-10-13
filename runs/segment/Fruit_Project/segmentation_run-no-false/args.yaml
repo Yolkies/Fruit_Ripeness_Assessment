@@ -1,7 +1,7 @@
 task: segment
 mode: train
 model: yolo26n-seg.pt
-data: E:\Fruit_Ripeness_Assessment\dataset\data.yaml
+data: dataset/data.yaml
 epochs: 50
 time: null
 patience: 100
@@ -12,7 +12,7 @@ save_period: -1
 cache: false
 device: '0'
 workers: 2
-project: E:\Fruit_Ripeness_Assessment\runs\segment\Fruit_Project
+project: runs/segment/Fruit_Project
 name: segmentation_run-no-false
 exist_ok: true
 pretrained: true
@@ -113,4 +113,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: tracktrack.yaml
-save_dir: E:\Fruit_Ripeness_Assessment\runs\segment\Fruit_Project\segmentation_run-no-false
+save_dir: runs/segment/Fruit_Project/segmentation_run-no-false

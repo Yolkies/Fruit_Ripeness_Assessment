@@ -1,49 +1,8 @@
-# pip install opencv-python numpy
-
-"""
-ORANGE RIPENESS ANALYSIS - VALENCIA CCI + CITRUS COVERAGE METHOD
-
-Reference 1 - Valencia orange CCI:
-    CCI = (1000 * a*) / (L* * b*)
-
-Published colour interpretation:
-    CCI < -7          -> green
-    -7 <= CCI < 0    -> light green / yellowish-green / pale yellow
-    0 <= CCI <= 7    -> pale yellow to orange
-    CCI > 7           -> increasingly intense orange
-
-Project operational grouping:
-    CCI >= 0 -> yellow/orange pixel
-    CCI < 0  -> non-yellow/orange pixel
-
-Important:
-The Valencia paper reports CCI ranges from peel colour measurements.
-Using CCI >= 0 as a per-image-pixel mask is this project's operational
-adaptation.
-
-Reference 2 - Citrus ripeness by yellow/orange coverage:
-    Index 1: yellow/orange < 20%
-    Index 2: 20% <= yellow/orange < 50%
-    Index 3: 50% <= yellow/orange < 70%
-    Index 4: 70% <= yellow/orange < 90%
-    Index 5: yellow/orange >= 90%
-
-Pipeline:
-    YOLO mask
-    -> original-colour pixels
-    -> OpenCV CIELAB
-    -> per-pixel CCI
-    -> yellow/orange mask
-    -> yellow/orange coverage
-    -> Index 1-5
-"""
-
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
-
 
 INDEX2_MIN = 20.0
 INDEX3_MIN = 50.0
@@ -74,26 +33,20 @@ class OrangeRipenessResult:
 
 
 def _normalise_binary_mask(
-    mask: np.ndarray,
-    target_shape: Tuple[int, int],
+    mask: np.ndarray, target_shape: Tuple[int, int]
 ) -> np.ndarray:
     if mask.ndim == 3:
         mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
 
     if mask.shape[:2] != target_shape:
         mask = cv2.resize(
-            mask,
-            (target_shape[1], target_shape[0]),
-            interpolation=cv2.INTER_NEAREST,
+            mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_NEAREST
         )
 
     return (mask > 0).astype(np.uint8) * 255
 
 
-def fruit_mask_from_black_background(
-    masked_crop_bgr: np.ndarray,
-) -> np.ndarray:
-    """Fallback only. Final integration should pass teammate YOLO mask."""
+def fruit_mask_from_black_background(masked_crop_bgr: np.ndarray) -> np.ndarray:
     if masked_crop_bgr is None or masked_crop_bgr.size == 0:
         raise ValueError("Input orange crop is empty")
 
@@ -102,10 +55,8 @@ def fruit_mask_from_black_background(
 
 
 def prepare_orange_for_colour_analysis(
-    original_crop_bgr: np.ndarray,
-    fruit_mask: Optional[np.ndarray] = None,
+    original_crop_bgr: np.ndarray, fruit_mask: Optional[np.ndarray] = None
 ) -> Dict[str, np.ndarray]:
-    """Use original-colour pixels for CIELAB / CCI analysis."""
     if original_crop_bgr is None or original_crop_bgr.size == 0:
         raise ValueError("Input orange crop is empty")
 
@@ -114,30 +65,17 @@ def prepare_orange_for_colour_analysis(
     if fruit_mask is None:
         fruit_mask = fruit_mask_from_black_background(original_crop_bgr)
     else:
-        fruit_mask = _normalise_binary_mask(
-            fruit_mask,
-            (h, w),
-        )
+        fruit_mask = _normalise_binary_mask(fruit_mask, (h, w))
 
     bgr = original_crop_bgr.copy()
     lab_opencv = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
 
-    return {
-        "bgr": bgr,
-        "lab_opencv": lab_opencv,
-        "fruit_mask": fruit_mask,
-    }
+    return {"bgr": bgr, "lab_opencv": lab_opencv, "fruit_mask": fruit_mask}
 
 
 def _opencv_lab_to_cielab(
     lab_opencv: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Convert OpenCV 8-bit LAB to standard CIELAB:
-        L*: 0-100
-        a*: -128 to 127
-        b*: -128 to 127
-    """
     lab = lab_opencv.astype(np.float32)
 
     lstar = lab[:, :, 0] * (100.0 / 255.0)
@@ -147,61 +85,31 @@ def _opencv_lab_to_cielab(
     return lstar, astar, bstar
 
 
-def calculate_cci_map(
-    lab_opencv: np.ndarray,
-    fruit_mask: np.ndarray,
-):
-    """
-    Calculate per-pixel CCI:
-        CCI = (1000 * a*) / (L* * b*)
-    """
+def calculate_cci_map(lab_opencv: np.ndarray, fruit_mask: np.ndarray):
     lstar, astar, bstar = _opencv_lab_to_cielab(lab_opencv)
 
     roi_bool = fruit_mask > 0
     denominator = lstar * bstar
 
     valid_bool = (
-        roi_bool
-        & np.isfinite(denominator)
-        & (np.abs(denominator) > CCI_EPSILON)
+        roi_bool & np.isfinite(denominator) & (np.abs(denominator) > CCI_EPSILON)
     )
 
-    cci_map = np.full(
-        lstar.shape,
-        np.nan,
-        dtype=np.float32,
-    )
+    cci_map = np.full(lstar.shape, np.nan, dtype=np.float32)
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        cci_map[valid_bool] = (
-            1000.0
-            * astar[valid_bool]
-            / denominator[valid_bool]
-        )
+        cci_map[valid_bool] = 1000.0 * astar[valid_bool] / denominator[valid_bool]
 
     yellow_orange_bool = valid_bool & (cci_map >= 0.0)
     non_yellow_orange_bool = valid_bool & (cci_map < 0.0)
-
     valid_cci_mask = valid_bool.astype(np.uint8) * 255
     yellow_orange_mask = yellow_orange_bool.astype(np.uint8) * 255
     non_yellow_orange_mask = non_yellow_orange_bool.astype(np.uint8) * 255
 
-    return (
-        cci_map,
-        valid_cci_mask,
-        yellow_orange_mask,
-        non_yellow_orange_mask,
-    )
+    return (cci_map, valid_cci_mask, yellow_orange_mask, non_yellow_orange_mask)
 
 
-def _make_cci_visualization(
-    cci_map: np.ndarray,
-    fruit_mask: np.ndarray,
-) -> np.ndarray:
-    """
-    Grayscale debug visualization of CCI values only.
-    Not used for classification.
-    """
+def _make_cci_visualization(cci_map: np.ndarray, fruit_mask: np.ndarray) -> np.ndarray:
     vis = np.zeros(cci_map.shape, dtype=np.uint8)
 
     valid = (fruit_mask > 0) & np.isfinite(cci_map)
@@ -226,14 +134,9 @@ def _make_cci_visualization(
 
 
 def measure_orange_features(
-    original_crop_bgr: np.ndarray,
-    fruit_mask: Optional[np.ndarray] = None,
+    original_crop_bgr: np.ndarray, fruit_mask: Optional[np.ndarray] = None
 ):
-    """Measure yellow/orange surface coverage inside the YOLO orange mask."""
-    data = prepare_orange_for_colour_analysis(
-        original_crop_bgr,
-        fruit_mask=fruit_mask,
-    )
+    data = prepare_orange_for_colour_analysis(original_crop_bgr, fruit_mask=fruit_mask)
 
     lab_opencv = data["lab_opencv"]
     roi_mask = data["fruit_mask"]
@@ -243,31 +146,19 @@ def measure_orange_features(
     if total == 0:
         raise ValueError("YOLO orange mask contains no fruit pixels")
 
-    (
-        cci_map,
-        valid_cci_mask,
-        yellow_orange_mask,
-        non_yellow_orange_mask,
-    ) = calculate_cci_map(
-        lab_opencv,
-        roi_mask,
+    cci_map, valid_cci_mask, yellow_orange_mask, non_yellow_orange_mask = (
+        calculate_cci_map(lab_opencv, roi_mask)
     )
 
     yellow_orange_pixels = int(cv2.countNonZero(yellow_orange_mask))
-    non_yellow_orange_pixels = int(
-        cv2.countNonZero(non_yellow_orange_mask)
-    )
-
+    non_yellow_orange_pixels = int(cv2.countNonZero(non_yellow_orange_mask))
     valid_pixels = int(cv2.countNonZero(valid_cci_mask))
     undefined_cci_pixels = total - valid_pixels
-
     yellow_orange_pct = 100.0 * yellow_orange_pixels / total
     non_yellow_orange_pct = 100.0 * non_yellow_orange_pixels / total
     undefined_cci_pct = 100.0 * undefined_cci_pixels / total
 
-    valid_values = cci_map[
-        (roi_mask > 0) & np.isfinite(cci_map)
-    ]
+    valid_values = cci_map[(roi_mask > 0) & np.isfinite(cci_map)]
 
     mean_cci = None
     median_cci = None
@@ -276,15 +167,9 @@ def measure_orange_features(
         mean_cci = float(np.mean(valid_values))
         median_cci = float(np.median(valid_values))
 
-    undefined_mask = cv2.bitwise_and(
-        roi_mask,
-        cv2.bitwise_not(valid_cci_mask),
-    )
+    undefined_mask = cv2.bitwise_and(roi_mask, cv2.bitwise_not(valid_cci_mask))
 
-    cci_visualization = _make_cci_visualization(
-        cci_map,
-        roi_mask,
-    )
+    cci_visualization = _make_cci_visualization(cci_map, roi_mask)
 
     result = OrangeRipenessResult(
         maturity_index=0,
@@ -316,61 +201,48 @@ def measure_orange_features(
     return result, diagnostics
 
 
-def classify_orange(
-    measurement: OrangeRipenessResult,
-) -> OrangeRipenessResult:
-    """Apply yellow/orange coverage Index 1-5 rules."""
+def classify_orange(measurement: OrangeRipenessResult) -> OrangeRipenessResult:
     coverage = measurement.yellow_orange_pct
 
     if coverage < INDEX2_MIN:
         measurement.maturity_index = 1
         measurement.maturity_label = "Index 1 - Green Fruit"
-        measurement.rule_basis = (
-            f"Yellow/orange coverage={coverage:.2f}% (<20%)."
-        )
+        measurement.rule_basis = f"Yellow/orange coverage={coverage:.2f}% (<20%)."
 
     elif coverage < INDEX3_MIN:
         measurement.maturity_index = 2
         measurement.maturity_label = "Index 2 - Color Transition"
         measurement.rule_basis = (
-            f"Yellow/orange coverage={coverage:.2f}% "
-            "(>=20% and <50%)."
+            f"Yellow/orange coverage={coverage:.2f}% (>=20% and <50%)."
         )
 
     elif coverage < INDEX4_MIN:
         measurement.maturity_index = 3
         measurement.maturity_label = "Index 3 - Early Ripe"
         measurement.rule_basis = (
-            f"Yellow/orange coverage={coverage:.2f}% "
-            "(>=50% and <70%)."
+            f"Yellow/orange coverage={coverage:.2f}% (>=50% and <70%)."
         )
 
     elif coverage < INDEX5_MIN:
         measurement.maturity_index = 4
         measurement.maturity_label = "Index 4 - Moderately Ripe"
         measurement.rule_basis = (
-            f"Yellow/orange coverage={coverage:.2f}% "
-            "(>=70% and <90%)."
+            f"Yellow/orange coverage={coverage:.2f}% (>=70% and <90%)."
         )
 
     else:
         measurement.maturity_index = 5
         measurement.maturity_label = "Index 5 - Fully Ripe"
-        measurement.rule_basis = (
-            f"Yellow/orange coverage={coverage:.2f}% (>=90%)."
-        )
+        measurement.rule_basis = f"Yellow/orange coverage={coverage:.2f}% (>=90%)."
 
     return measurement
 
 
 def assess_orange_ripeness(
-    original_crop_bgr: np.ndarray,
-    fruit_mask: Optional[np.ndarray] = None,
+    original_crop_bgr: np.ndarray, fruit_mask: Optional[np.ndarray] = None
 ):
-    """YOLO mask -> CIELAB -> CCI -> coverage -> Index 1-5."""
     result, diagnostics = measure_orange_features(
-        original_crop_bgr,
-        fruit_mask=fruit_mask,
+        original_crop_bgr, fruit_mask=fruit_mask
     )
 
     result = classify_orange(result)
@@ -378,11 +250,7 @@ def assess_orange_ripeness(
     return result, diagnostics
 
 
-def save_diagnostics(
-    out_dir: str,
-    diagnostics: Dict[str, np.ndarray],
-) -> None:
-    """Save orange ripeness debug images."""
+def save_diagnostics(out_dir: str, diagnostics: Dict[str, np.ndarray]) -> None:
     import os
 
     os.makedirs(out_dir, exist_ok=True)
@@ -398,18 +266,11 @@ def save_diagnostics(
         "lab_b_channel",
     ):
         if name in diagnostics:
-            cv2.imwrite(
-                os.path.join(out_dir, f"{name}.png"),
-                diagnostics[name],
-            )
+            cv2.imwrite(os.path.join(out_dir, f"{name}.png"), diagnostics[name])
 
     if "bgr" in diagnostics:
         cv2.imwrite(
-            os.path.join(
-                out_dir,
-                "input_original_colour.png",
-            ),
-            diagnostics["bgr"],
+            os.path.join(out_dir, "input_original_colour.png"), diagnostics["bgr"]
         )
 
 
@@ -423,15 +284,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "image",
-        help="Original-colour orange crop/image",
-    )
-
-    parser.add_argument(
-        "--mask",
-        help="Optional YOLO binary orange mask",
-    )
+    parser.add_argument("image", help="Original-colour orange crop/image")
+    parser.add_argument("--mask", help="Optional YOLO binary orange mask")
 
     parser.add_argument(
         "--out",
@@ -444,55 +298,27 @@ if __name__ == "__main__":
     img = cv2.imread(args.image)
 
     if img is None:
-        raise SystemExit(
-            f"Cannot read image: {args.image}"
-        )
+        raise SystemExit(f"Cannot read image: {args.image}")
 
     mask = None
 
     if args.mask:
-        mask = cv2.imread(
-            args.mask,
-            cv2.IMREAD_GRAYSCALE,
-        )
+        mask = cv2.imread(args.mask, cv2.IMREAD_GRAYSCALE)
 
         if mask is None:
-            raise SystemExit(
-                f"Cannot read mask: {args.mask}"
-            )
+            raise SystemExit(f"Cannot read mask: {args.mask}")
 
-    result, diagnostics = assess_orange_ripeness(
-        img,
-        fruit_mask=mask,
-    )
+    result, diagnostics = assess_orange_ripeness(img, fruit_mask=mask)
 
     print("\nORANGE RIPENESS RESULT")
     print("-----------------------")
     print(f"Fruit pixels               : {result.total_fruit_pixels}")
-    print(
-        f"Yellow/orange pixels       : "
-        f"{result.yellow_orange_pixels} (CCI >= 0)"
-    )
-    print(
-        f"Non-yellow/orange pixels   : "
-        f"{result.non_yellow_orange_pixels} (CCI < 0)"
-    )
-    print(
-        f"Undefined CCI pixels       : "
-        f"{result.undefined_cci_pixels}"
-    )
-    print(
-        f"Yellow/orange coverage     : "
-        f"{result.yellow_orange_pct:.2f}%"
-    )
-    print(
-        f"Non-yellow/orange coverage : "
-        f"{result.non_yellow_orange_pct:.2f}%"
-    )
-    print(
-        f"Undefined CCI coverage     : "
-        f"{result.undefined_cci_pct:.2f}%"
-    )
+    print(f"Yellow/orange pixels       : {result.yellow_orange_pixels} (CCI >= 0)")
+    print(f"Non-yellow/orange pixels   : {result.non_yellow_orange_pixels} (CCI < 0)")
+    print(f"Undefined CCI pixels       : {result.undefined_cci_pixels}")
+    print(f"Yellow/orange coverage     : {result.yellow_orange_pct:.2f}%")
+    print(f"Non-yellow/orange coverage : {result.non_yellow_orange_pct:.2f}%")
+    print(f"Undefined CCI coverage     : {result.undefined_cci_pct:.2f}%")
 
     if result.mean_cci is not None:
         print(f"Mean CCI                   : {result.mean_cci:.2f}")
@@ -504,12 +330,6 @@ if __name__ == "__main__":
     print(f"Prediction                 : {result.maturity_label}")
     print(f"Rule basis                 : {result.rule_basis}")
 
-    save_diagnostics(
-        args.out,
-        diagnostics,
-    )
+    save_diagnostics(args.out, diagnostics)
 
-    print(
-        "\nDiagnostic masks saved to:",
-        os.path.abspath(args.out),
-    )
+    print("\nDiagnostic masks saved to:", os.path.abspath(args.out))

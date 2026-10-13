@@ -1,5 +1,3 @@
-"""Module 2.1 parameter panel - Image Pre-processing and Classical Segmentation."""
-
 from tkinter import ttk
 
 from gui.param_widgets import ParamEditor, ScrollableFrame
@@ -20,6 +18,7 @@ def build(parent, on_change):
         row += 1
 
     ttk.Button(body, text="Reset 2.1 defaults", command=editor.reset).grid(
-        row=row, column=0, sticky="w", padx=4, pady=6)
+        row=row, column=0, sticky="w", padx=4, pady=6
+    )
 
     return editor

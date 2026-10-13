@@ -1,5 +1,3 @@
-"""Module 2.2 - Fruit Detection and Instance Segmentation."""
-
 import os
 import json
 from dataclasses import dataclass
@@ -12,13 +10,12 @@ from ultralytics import YOLO
 
 import preprocessing
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 MODEL_PATH = "runs/segment/Fruit_Project/segmentation_run/weights/best.pt"
 
 CLASS_NAMES = ["apple", "banana", "mango", "orange", "strawberry", "tomato"]
-OUTPUT_DIR = "pipeline_output"          # masked crops for the ripeness stage go here
-CONF_THRESHOLD = 0.2              # detection confidence cut-off
+OUTPUT_DIR = "pipeline_output"
+CONF_THRESHOLD = 0.2
 
 
 def resolve_path(path):
@@ -28,9 +25,6 @@ def resolve_path(path):
     return str(PROJECT_ROOT / candidate)
 
 
-# ----------------------------------------------------------------------
-# Tunable parameters (edited live by the GUI)
-# ----------------------------------------------------------------------
 @dataclass
 class DetectionParams:
     model_path: str = MODEL_PATH
@@ -53,20 +47,10 @@ def _load_model_cached(path):
 
 
 def load_model():
-    """
-    Load YOLO only once per model path instead of reloading it every time
-    Streamlit reruns the script.
-    """
     return _load_model_cached(resolve_path(PARAMS.model_path))
 
 
 def segment(model, image, orig_shape, conf=None, params=None):
-    """
-    Flowchart: Fruit Segmentation.
-    Runs one inference over the whole (pre-processed) frame. Masks are resized
-    to the original frame size, so they index straight into the original image.
-    Returns a list of per-instance dicts: binary mask, class id, confidence.
-    """
     p = params if params is not None else PARAMS
     conf = p.conf_threshold if conf is None else conf
 
@@ -77,7 +61,7 @@ def segment(model, image, orig_shape, conf=None, params=None):
     if res.masks is None:
         return []
 
-    masks = res.masks.data.cpu().numpy()              # (N, h, w) in 0..1
+    masks = res.masks.data.cpu().numpy()
     cls_ids = res.boxes.cls.cpu().numpy().astype(int)
     confs = res.boxes.conf.cpu().numpy()
     for m, c, cf in zip(masks, cls_ids, confs):
@@ -89,31 +73,31 @@ def segment(model, image, orig_shape, conf=None, params=None):
 
 
 def dedupe(detections, overlap_thr=None):
-    overlap_thr = PARAMS.dedupe_overlap_threshold if overlap_thr is None else overlap_thr
+    overlap_thr = (
+        PARAMS.dedupe_overlap_threshold if overlap_thr is None else overlap_thr
+    )
     kept = []
     for d in sorted(detections, key=lambda x: -x["conf"]):
         area = cv2.countNonZero(d["mask"])
         if area == 0:
             continue
-        if any(cv2.countNonZero(cv2.bitwise_and(d["mask"], k["mask"])) /
-               min(area, cv2.countNonZero(k["mask"])) > overlap_thr for k in kept):
+        if any(
+            cv2.countNonZero(cv2.bitwise_and(d["mask"], k["mask"]))
+            / min(area, cv2.countNonZero(k["mask"]))
+            > overlap_thr
+            for k in kept
+        ):
             continue
         kept.append(d)
     return sorted(kept, key=lambda d: cv2.boundingRect(d["mask"])[0])
 
 
 def contour_count(detections):
-    """
-    Flowchart: Contour Count.
-    Classical step: run cv2.findContours on EACH instance mask. Because the
-    model separates touching fruit into individual masks, each mask yields one
-    clean external contour -> an accurate count even when fruit touch (which
-    plain thresholding + contours would merge into one).
-    Adds 'contour' and 'area' to each detection; returns the total count.
-    """
     count = 0
     for d in detections:
-        cnts, _ = cv2.findContours(d["mask"], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts, _ = cv2.findContours(
+            d["mask"], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         if not cnts:
             d["contour"] = None
             d["area"] = 0
@@ -126,16 +110,19 @@ def contour_count(detections):
 
 
 def annotate(img_bgr, detections, show_mask=False, params=None):
-    """Draw contours + class labels + index for the Segmented view.
-    If show_mask=True, also blend each instance's filled mask as a translucent
-    coloured overlay."""
     p = params if params is not None else PARAMS
     alpha = p.overlay_alpha
     thickness = max(1, int(p.contour_thickness))
 
     out = img_bgr.copy()
-    palette = [(66, 66, 244), (48, 172, 220), (60, 76, 231), (80, 175, 76),
-               (0, 214, 255), (170, 66, 244)]
+    palette = [
+        (66, 66, 244),
+        (48, 172, 220),
+        (60, 76, 231),
+        (80, 175, 76),
+        (0, 214, 255),
+        (170, 66, 244),
+    ]
     if show_mask:
         overlay = out.copy()
         for d in detections:
@@ -151,25 +138,26 @@ def annotate(img_bgr, detections, show_mask=False, params=None):
         cv2.drawContours(out, [d["contour"]], -1, color, thickness)
         x, y, w, h = cv2.boundingRect(d["contour"])
         label = f"{i+1}:{CLASS_NAMES[d['cls']]} {d['conf']:.2f}"
-        cv2.putText(out, label, (x, max(0, y - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, p.label_font_scale, color, thickness, cv2.LINE_AA)
+        cv2.putText(
+            out,
+            label,
+            (x, max(0, y - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            p.label_font_scale,
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
     return out
 
 
 def run_yolo_segmentation(image_bgr, model=None):
-    """
-    Module 2.1 preprocessing + YOLO instance segmentation + contour count.
-    """
     if model is None:
         model = load_model()
 
     prep = preprocessing.preprocess(image_bgr)
 
-    detections = segment(
-        model,
-        prep.bgr,
-        image_bgr.shape,
-    )
+    detections = segment(model, prep.bgr, image_bgr.shape)
 
     contour_count(detections)
 
@@ -177,12 +165,6 @@ def run_yolo_segmentation(image_bgr, model=None):
 
 
 def crop_detection_from_original(image_bgr, detection):
-    """
-    Returns:
-        original_crop
-        mask_crop
-        background_removed
-    """
     mask_full = detection["mask"]
 
     if detection.get("contour") is not None:
@@ -190,34 +172,22 @@ def crop_detection_from_original(image_bgr, detection):
     else:
         x, y, w, h = cv2.boundingRect(mask_full)
 
-    original_crop = image_bgr[y:y + h, x:x + w].copy()
-    mask_crop = mask_full[y:y + h, x:x + w].copy()
+    original_crop = image_bgr[y : y + h, x : x + w].copy()
+    mask_crop = mask_full[y : y + h, x : x + w].copy()
 
-    background_removed = cv2.bitwise_and(
-        original_crop,
-        original_crop,
-        mask=mask_crop,
-    )
+    background_removed = cv2.bitwise_and(original_crop, original_crop, mask=mask_crop)
 
     return original_crop, mask_crop, background_removed
 
 
 def detect_image(image_bgr):
-    """
-    Preprocessing + YOLO fruit detection only.
-    Ripeness analysis (Module 2.3) is NOT performed here.
-    """
     if image_bgr is None:
         raise ValueError("Input image is empty.")
 
     detections = run_yolo_segmentation(image_bgr)
 
     if not detections:
-        return {
-            "count": 0,
-            "annotated_image": image_bgr,
-            "detections": [],
-        }
+        return {"count": 0, "annotated_image": image_bgr, "detections": []}
 
     annotated_image = annotate(image_bgr, detections, show_mask=True)
 
@@ -226,20 +196,20 @@ def detect_image(image_bgr):
     for i, detection in enumerate(detections, start=1):
         yolo_fruit_type = CLASS_NAMES[int(detection["cls"])]
 
-        (
-            original_crop,
-            fruit_mask,
-            background_removed,
-        ) = crop_detection_from_original(image_bgr, detection)
+        original_crop, fruit_mask, background_removed = crop_detection_from_original(
+            image_bgr, detection
+        )
 
-        prepared_detections.append({
-            "number": i,
-            "yolo_fruit_type": yolo_fruit_type,
-            "confidence": float(detection["conf"]),
-            "crop": original_crop,
-            "fruit_mask": fruit_mask,
-            "masked_crop": background_removed,
-        })
+        prepared_detections.append(
+            {
+                "number": i,
+                "yolo_fruit_type": yolo_fruit_type,
+                "confidence": float(detection["conf"]),
+                "crop": original_crop,
+                "fruit_mask": fruit_mask,
+                "masked_crop": background_removed,
+            }
+        )
 
     return {
         "count": len(prepared_detections),
@@ -249,12 +219,6 @@ def detect_image(image_bgr):
 
 
 def export_for_ripeness(img_bgr, detections, out_dir=None):
-    """
-    Flowchart hand-off: Output -> (Ripeness / Defect / Grade).
-    For each fruit, save a MASKED crop (background removed, only fruit pixels)
-    plus a manifest. This is exactly what the HSV ripeness + defect stage
-    consumes. Returns the manifest list.
-    """
     out_dir = PARAMS.output_dir if out_dir is None else out_dir
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = os.path.join(resolve_path(out_dir), stamp)
@@ -263,20 +227,21 @@ def export_for_ripeness(img_bgr, detections, out_dir=None):
     for i, d in enumerate(detections):
         if d.get("contour") is None:
             continue
-        # isolate this fruit's pixels only (background -> black)
         masked = cv2.bitwise_and(img_bgr, img_bgr, mask=d["mask"])
         x, y, w, h = cv2.boundingRect(d["contour"])
-        crop = masked[y:y + h, x:x + w]
+        crop = masked[y : y + h, x : x + w]
         fname = f"fruit_{i+1:02d}_{CLASS_NAMES[d['cls']]}.png"
         cv2.imwrite(os.path.join(session, fname), crop)
-        manifest.append({
-            "index": i + 1,
-            "fruit_type": CLASS_NAMES[d["cls"]],
-            "confidence": round(d["conf"], 4),
-            "contour_area_px": round(d["area"], 1),
-            "bbox_xywh": [int(x), int(y), int(w), int(h)],
-            "masked_crop": fname,
-        })
+        manifest.append(
+            {
+                "index": i + 1,
+                "fruit_type": CLASS_NAMES[d["cls"]],
+                "confidence": round(d["conf"], 4),
+                "contour_area_px": round(d["area"], 1),
+                "bbox_xywh": [int(x), int(y), int(w), int(h)],
+                "masked_crop": fname,
+            }
+        )
     with open(os.path.join(session, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
     return session, manifest

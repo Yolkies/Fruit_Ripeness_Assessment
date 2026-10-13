@@ -1,5 +1,3 @@
-"""Module 2.4 parameter panel - Blemish / Defect Detection."""
-
 from tkinter import ttk
 
 from gui.param_widgets import ParamEditor, ScrollableFrame
@@ -19,7 +17,7 @@ def build(parent, on_change):
         editor.section(body, title, params, row)
         row += 1
 
-    ttk.Button(body, text="Reset blemish defaults",
-               command=editor.reset).grid(row=row, column=0,
-                                          sticky="w", padx=4, pady=6)
+    ttk.Button(body, text="Reset blemish defaults", command=editor.reset).grid(
+        row=row, column=0, sticky="w", padx=4, pady=6
+    )
     return editor

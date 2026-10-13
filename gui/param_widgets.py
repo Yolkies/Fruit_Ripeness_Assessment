@@ -1,16 +1,13 @@
-"""Shared parameter-editing widgets used by the three module panels."""
-
 import tkinter as tk
 from tkinter import ttk
-
-from params_spec import Param, hsv_range_pair, hsv_triplet
 
 
 class ScrollableFrame(ttk.Frame):
     def __init__(self, parent, height=520, width=340):
         super().__init__(parent)
-        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0,
-                           height=height, width=width)
+        canvas = tk.Canvas(
+            self, borderwidth=0, highlightthickness=0, height=height, width=width
+        )
         bar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=bar.set)
         bar.pack(side="right", fill="y")
@@ -18,10 +15,12 @@ class ScrollableFrame(ttk.Frame):
 
         self.body = ttk.Frame(canvas)
         window = canvas.create_window((0, 0), window=self.body, anchor="nw")
-        self.body.bind("<Configure>",
-                       lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfigure(window, width=e.width))
+        self.body.bind(
+            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.bind(
+            "<Configure>", lambda e: canvas.itemconfigure(window, width=e.width)
+        )
 
         def wheel(event):
             canvas.yview_scroll(-1 * (event.delta // 120), "units")
@@ -31,8 +30,6 @@ class ScrollableFrame(ttk.Frame):
 
 
 class ParamEditor:
-    """Renders Params as labelled rows and keeps the widgets in sync."""
-
     def __init__(self, on_change=None):
         self.on_change = on_change or (lambda: None)
         self.rows = []
@@ -47,7 +44,8 @@ class ParamEditor:
 
     def add(self, parent, param, row):
         ttk.Label(parent, text=param.label).grid(
-            row=row, column=0, sticky="w", padx=(0, 6), pady=1)
+            row=row, column=0, sticky="w", padx=(0, 6), pady=1
+        )
 
         if param.kind == "bool":
             var = tk.BooleanVar(value=bool(param.get()))
@@ -57,7 +55,8 @@ class ParamEditor:
                 self.on_change()
 
             ttk.Checkbutton(parent, variable=var, command=apply).grid(
-                row=row, column=1, columnspan=2, sticky="w")
+                row=row, column=1, columnspan=2, sticky="w"
+            )
             self.rows.append((param, var, None))
             return
 
@@ -100,8 +99,9 @@ class ParamEditor:
             except ValueError:
                 text.set(param.format())
 
-        scale = ttk.Scale(parent, from_=param.lo, to=param.hi,
-                          variable=var, command=from_scale)
+        scale = ttk.Scale(
+            parent, from_=param.lo, to=param.hi, variable=var, command=from_scale
+        )
         scale.grid(row=row, column=1, sticky="ew", padx=2)
         entry = ttk.Entry(parent, textvariable=text, width=7)
         entry.grid(row=row, column=2, sticky="w")

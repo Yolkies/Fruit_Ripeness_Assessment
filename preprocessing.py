@@ -1,10 +1,3 @@
-"""
-Stage 1 - Preprocessing.
-
-Photometric conditioning only: 1.1 white balance, 1.2 CLAHE.
-No geometric change, so masks from Stage 2 still index into the original image.
-"""
-
 from dataclasses import dataclass, field
 
 import cv2 as cv
@@ -14,7 +7,7 @@ import numpy as np
 @dataclass
 class PreprocessResult:
     bgr: np.ndarray
-    steps: dict = field(default_factory=dict)  
+    steps: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -22,12 +15,12 @@ class PreprocessParams:
     enabled: bool = True
 
     white_balance_enabled: bool = False
-    wb_strength: float = 0.5            # 0 = no change, 1 = full grey-world
+    wb_strength: float = 0.5
 
     clahe_enabled: bool = True
-    clahe_clip_limit: float = 1.0       # CLAHE strength
-    clahe_tile_grid: int = 8            # default: 8
-    clahe_contrast_gate: float = 55.0  
+    clahe_clip_limit: float = 1.0
+    clahe_tile_grid: int = 8
+    clahe_contrast_gate: float = 55.0
 
 
 PARAMS = PreprocessParams()
@@ -45,8 +38,7 @@ def _grayworld(image, saturation_threshold):
     return np.clip(src * (means.mean() / means), 0, 255).astype(np.uint8)
 
 
-def white_balance(image, saturation_threshold=0.9,
-                  strength=0.5, max_gain=1.6):
+def white_balance(image, saturation_threshold=0.9, strength=0.5, max_gain=1.6):
     try:
         wb = cv.xphoto.createGrayworldWB()
         wb.setSaturationThreshold(saturation_threshold)
@@ -54,8 +46,6 @@ def white_balance(image, saturation_threshold=0.9,
     except Exception:
         balanced = _grayworld(image, saturation_threshold)
 
-    # Cap the gain and blend back: plain grey-world pushes a single vivid fruit
-    # toward its complement (a red tomato turns blue).
     src = image.astype(np.float32)
     dst = balanced.astype(np.float32)
     eps = 1e-6
@@ -72,7 +62,6 @@ def apply_clahe(image, clip_limit=1.0, tile_grid_size=(8, 8), contrast_gate=55.0
     lab = cv.cvtColor(image, cv.COLOR_BGR2LAB)
     L, A, B = cv.split(lab)
 
-    
     if float(L.std()) >= contrast_gate:
         return image, False
 
@@ -90,18 +79,18 @@ def preprocess(image, keep_steps=False, params=None):
 
     img = image.copy()
 
-    # 1.1
     if p.white_balance_enabled:
         img = white_balance(img, strength=p.wb_strength)
         if keep_steps:
             steps["1.1_white_balanced"] = img.copy()
 
-    # 1.2
     if p.clahe_enabled:
         img, clahe_applied = apply_clahe(
-            img, p.clahe_clip_limit,
+            img,
+            p.clahe_clip_limit,
             (p.clahe_tile_grid, p.clahe_tile_grid),
-            p.clahe_contrast_gate)
+            p.clahe_contrast_gate,
+        )
         if keep_steps:
             steps["1.2_clahe"] = img.copy()
             steps["1.2_clahe_applied"] = clahe_applied

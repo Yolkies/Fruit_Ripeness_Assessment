@@ -1,0 +1,7 @@
+* text=auto
+*.bat text eol=crlf
+HOW_TO_RUN.txt text eol=crlf
+*.pt binary
+*.jpg binary
+*.jpeg binary
+*.png binary

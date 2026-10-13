@@ -1,5 +1,3 @@
-"""Module 2.3 parameter panel - Colour-Based Fruit Ripeness Assessment."""
-
 from tkinter import ttk
 
 import ripeness
@@ -8,8 +6,6 @@ from params_spec import ripeness_sections
 
 
 class _AllFruits:
-    """Aggregates the per-fruit editors so the caller can treat them as one."""
-
     def __init__(self, editors):
         self.editors = editors
 
@@ -45,8 +41,8 @@ def build(parent, on_change):
             editor.section(body, title, params, row)
             row += 1
 
-        ttk.Button(body, text=f"Reset {fruit} defaults",
-                   command=editor.reset).grid(row=row, column=0,
-                                              sticky="w", padx=4, pady=6)
+        ttk.Button(body, text=f"Reset {fruit} defaults", command=editor.reset).grid(
+            row=row, column=0, sticky="w", padx=4, pady=6
+        )
 
     return _AllFruits(editors)
